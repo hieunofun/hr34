@@ -1,16 +1,16 @@
-// Read-only audit of a DEOCA Excel file against the HR31 personnel directory.
+// Read-only audit of a DEOCA Excel file against the HR34 personnel directory.
 // Run with SUPABASE_SERVICE_ROLE_KEY and VITE_SUPABASE_URL in the environment.
 import { createClient } from '@supabase/supabase-js'
 import xlsx from 'xlsx'
 import { findDeocaPunchHeader, getDeocaShiftName, parseDeocaPunchSheet } from '../src/utils/deocaPunchImport.js'
-import { buildChamCongRows, planHr31AttendanceImport } from '../src/services/hr31AttendanceImport.js'
+import { buildChamCongRows, planHr34AttendanceImport } from '../src/services/hr34AttendanceImport.js'
 import { formatAttendanceTime } from '../src/utils/attendanceShift.js'
 
 const filePath = process.argv[2]
 if (!filePath) throw new Error('Usage: node scripts/verifyDeocaImport.mjs <excel-file>')
 const url = process.env.VITE_SUPABASE_URL
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY
-const companyId = '00000000-0000-0000-0000-000000000031'
+const companyId = '00000000-0000-0000-0000-000000000034'
 if (!url || !key) throw new Error('Missing Supabase read credentials')
 const supabase = createClient(url, key)
 const workbook = xlsx.readFile(filePath, { cellDates: true })
@@ -40,7 +40,7 @@ const logs = records.filter(record => byCode.has(record.employee_code)).map(reco
   cong: 0
 }))
 const directRows = buildChamCongRows(logs, companyId, personnel)
-const plan = planHr31AttendanceImport({ incomingLogs: logs })
+const plan = planHr34AttendanceImport({ incomingLogs: logs })
 const readAll = async queryPage => {
   const all = []
   for (let from = 0; ; from += 1000) {
@@ -58,7 +58,7 @@ const [storedLogs, storedAttendance] = await Promise.all([
     .select('id,nhan_su_id,ngay,gia_tri_goc,gio_vao,gio_ra,ca_lam,tong_cong')
     .eq('company_id', companyId).order('id', { ascending: true }).range(from, from + 999))
 ])
-const productionPlan = planHr31AttendanceImport({
+const productionPlan = planHr34AttendanceImport({
   incomingLogs: logs,
   existingLogs: storedLogs.map(row => ({
     ...row.data,
@@ -103,8 +103,8 @@ console.log(JSON.stringify({
   plannedInsertsWithEmptyHistory: plan.inserts.length,
   plannedConflictsWithEmptyHistory: plan.conflicts.length,
   directRowsReady: directRows.length,
-  currentHr31LogCount: logsCount.count,
-  currentHr31AttendanceCount: attendanceCount.count,
+  currentHr34LogCount: logsCount.count,
+  currentHr34AttendanceCount: attendanceCount.count,
   productionPlan: {
     inserts: productionPlan.inserts.length,
     updates: productionPlan.updates.length,

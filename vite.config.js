@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 3031,
+    port: 3034,
     open: false,
     watch: {
       ignored: ['**/*.xlsx', '**/*.xls', '**/*.csv', '**/.git/**']

@@ -9,7 +9,7 @@ const dayKey = log => `${String(log.employeeId || '')}|${String(log.date || '').
 const isExcelLog = log => log?.sourceType === 'excel-import' ||
   Boolean(log?.sourceEmployeeCode || log?.sourceEmployeeName || log?.importFormat)
 
-export const planHr31AttendanceImport = ({ incomingLogs = [], existingLogs = [], skippedSourceKeys = new Set() } = {}) => {
+export const planHr34AttendanceImport = ({ incomingLogs = [], existingLogs = [], skippedSourceKeys = new Set() } = {}) => {
   const existingByDay = new Map()
   for (const log of existingLogs) {
     const key = dayKey(log)
@@ -29,7 +29,7 @@ export const planHr31AttendanceImport = ({ incomingLogs = [], existingLogs = [],
       continue
     }
     if (!log.employeeId || String(log.employeeId).startsWith('external:')) {
-      conflicts.push({ log, reason: 'Chưa ghép với hồ sơ nhân sự HR31' })
+      conflicts.push({ log, reason: 'Chưa ghép với hồ sơ nhân sự HR34' })
       continue
     }
     const key = dayKey(log)
@@ -75,7 +75,7 @@ export const buildChamCongRows = (logs, companyId, personnel = []) => {
   const byId = new Map(personnel.map(person => [String(person.id), person]))
   return logs.map(log => {
     const person = byId.get(String(log.employeeId))
-    if (!person) throw new Error(`Mã ${log.sourceEmployeeCode || log.employeeCode || '?'} chưa có hồ sơ nhan_su thuộc HR31.`)
+    if (!person) throw new Error(`Mã ${log.sourceEmployeeCode || log.employeeCode || '?'} chưa có hồ sơ nhan_su thuộc HR34.`)
     const sourceCode = String(log.sourceEmployeeCode || log.employeeCode || '').trim()
     if (log.importFormat === 'deoca-punch' && sourceCode && person.ma_nhan_vien && sourceCode !== person.ma_nhan_vien) {
       throw new Error(`Mã nguồn ${sourceCode} không khớp hồ sơ ${person.ma_nhan_vien}.`)
@@ -121,7 +121,7 @@ const attendanceFieldsMatch = (current, next) =>
  * Preflight cả hai bảng trước khi ghi. Ghi cham_cong trước để một lần thử lại
  * sau lỗi mạng có thể hoàn thành hr_records và bảng công mà không nhân đôi.
  */
-export const commitHr31AttendanceImport = async ({
+export const commitHr34AttendanceImport = async ({
   supabase, fbGet, fbUpdate, companyId, incomingLogs,
   skippedSourceKeys = new Set(), reconcileMode = false
 }) => {
@@ -129,7 +129,7 @@ export const commitHr31AttendanceImport = async ({
   const existingLogs = Array.isArray(existingData)
     ? existingData
     : Object.entries(existingData || {}).map(([id, value]) => ({ ...value, id }))
-  let plan = planHr31AttendanceImport({ incomingLogs, existingLogs, skippedSourceKeys })
+  let plan = planHr34AttendanceImport({ incomingLogs, existingLogs, skippedSourceKeys })
   if (reconcileMode) {
     const existingById = new Map(existingLogs.map(log => [String(log.id), log]))
     const updates = []

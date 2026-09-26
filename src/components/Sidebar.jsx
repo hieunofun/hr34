@@ -55,8 +55,8 @@ function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <img src="/deoca-logo.png" alt="DEOCA GROUP" />
-        <span>DEOCA HR</span>
+        <img src="/hr-logo.svg" alt="HR34" />
+        <span>HR34</span>
       </div>
 
       {accountingOnly ? (

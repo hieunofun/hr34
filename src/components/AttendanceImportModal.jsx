@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import XLSX from 'xlsx-js-style'
 import { fbGet, fbUpdate } from '../services/firebase'
 import { supabase } from '../services/supabase'
-import { commitHr31AttendanceImport } from '../services/hr31AttendanceImport'
+import { commitHr34AttendanceImport } from '../services/hr34AttendanceImport'
 import { useAuth } from '../contexts/AuthContext'
 import {
   applyEmployeeToAttendanceLog,
@@ -1406,7 +1406,7 @@ function AttendanceImportModal({
       !group.selectedEmployeeId && group.status !== 'skipped'
     ).length
     if (unresolvedCount > 0) {
-      alert(`Còn ${unresolvedCount} nhân viên chưa được ghép hồ sơ HR31. Hãy ghép hoặc bỏ qua trước khi nhập.`)
+      alert(`Còn ${unresolvedCount} nhân viên chưa được ghép hồ sơ HR34. Hãy ghép hoặc bỏ qua trước khi nhập.`)
       return
     }
 
@@ -1463,7 +1463,7 @@ function AttendanceImportModal({
           splitShiftBreakdown: metrics.splitShiftBreakdown
         } : timed
       })
-      const result = await commitHr31AttendanceImport({
+      const result = await commitHr34AttendanceImport({
         supabase,
         fbGet,
         fbUpdate,
@@ -1915,7 +1915,7 @@ function AttendanceImportModal({
                   disabled={loading || unresolvedEmployeeCount > 0}
                   title={
                     unresolvedEmployeeCount > 0
-                      ? 'Hãy ghép hoặc bỏ qua mọi nhân viên trước khi lưu vào HR31'
+                      ? 'Hãy ghép hoặc bỏ qua mọi nhân viên trước khi lưu vào HR34'
                       : ''
                   }
                 >

@@ -60,9 +60,9 @@ function Login() {
       <section className="system-login__form-panel">
         <div className="system-login__form-wrap">
           <div className="system-login__intro">
-            <img src="/deoca-logo.png" alt="DEOCA GROUP" />
+            <img src="/hr-logo.svg" alt="HR34" />
             <h1>Đăng nhập hệ thống</h1>
-            <p>Hệ thống quản lý nhân sự DEOCA GROUP</p>
+            <p>Hệ thống quản lý nhân sự HR34</p>
           </div>
 
           {error && <div className="system-login__error"><i className="fas fa-exclamation-circle"></i><span>{error}</span></div>}
@@ -112,14 +112,14 @@ function Login() {
 
           <p className="system-login__employee-link">Nhân viên có thể đăng nhập tại đây hoặc <Link to="/employee-login">mở trang nhân viên</Link>.</p>
         </div>
-        <footer>© 2026 DEOCA GROUP HR Management System</footer>
+        <footer>© 2026 HR34 HR Management System</footer>
       </section>
 
-      <aside className="system-login__branding" aria-label="DEOCA GROUP">
+      <aside className="system-login__branding" aria-label="HR34">
         <div className="system-login__branding-content">
-          <div className="system-login__brand-logo"><img src="/deoca-logo.png" alt="DEOCA GROUP" /></div>
-          <h2>DEOCA GROUP</h2>
-          <p className="system-login__slogan">NGHĨ KHÁC BIỆT · TẠO CÁCH BIỆT</p>
+          <div className="system-login__brand-logo"><img src="/hr-logo.svg" alt="HR34" /></div>
+          <h2>HR34</h2>
+          <p className="system-login__slogan">QUẢN LÝ NHÂN SỰ</p>
           <div className="system-login__accent"></div>
           <p className="system-login__description">Hệ thống quản lý nhân sự tập trung, chuyên nghiệp và hiệu quả.</p>
         </div>

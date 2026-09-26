@@ -34,7 +34,7 @@ function EmployeeLogin() {
   return (
     <main className="employee-login">
       <section className="employee-login__card">
-        <img src="/deoca-logo.png" alt="DEOCA GROUP" />
+        <img src="/hr-logo.svg" alt="HR34" />
         <h1>Đăng nhập nhân viên</h1>
         <p>Đăng nhập để xem Bảng công của bạn</p>
         {error && <div className="employee-login__error">{error}</div>}

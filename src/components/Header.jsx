@@ -14,7 +14,7 @@ function Header() {
   return (
     <header className="header">
       <div className="logo">
-        <img src="/deoca-logo.png" alt="DEOCA GROUP" />
+        <img src="/hr-logo.svg" alt="HR34" />
         <h1>DEOCA <span>HR</span></h1>
       </div>
       <div className="user-info">
