@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useCompany } from '../contexts/CompanyContext'
 import CompanyLogo from '../components/CompanyLogo'
-import { companyDisplayName, companyLogoSource } from '../utils/companyBrand'
+import { companyDisplayName, setCompanyFavicon } from '../utils/companyBrand'
 import './EmployeeLogin.css'
 
 function EmployeeLogin() {
@@ -18,8 +18,7 @@ function EmployeeLogin() {
 
   useEffect(() => {
     document.title = brandName
-    const icon = document.querySelector('link[rel="icon"]')
-    if (icon) icon.href = companyLogoSource(logoUrl)
+    setCompanyFavicon(logoUrl)
   }, [brandName, logoUrl])
 
   const handleSubmit = async (event) => {

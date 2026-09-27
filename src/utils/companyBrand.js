@@ -14,3 +14,13 @@ export function companyLogoSource(logoUrl) {
 export function companyDisplayName(name) {
   return String(name || '').trim() || GENERIC_HR_NAME
 }
+
+export function setCompanyFavicon(logoUrl) {
+  const icon = document.querySelector('link[rel="icon"]')
+  if (!icon) return
+  icon.onerror = () => {
+    icon.onerror = null
+    icon.href = GENERIC_HR_LOGO
+  }
+  icon.href = companyLogoSource(logoUrl)
+}

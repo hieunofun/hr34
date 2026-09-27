@@ -30,7 +30,8 @@ function Sidebar() {
 
   const employeeItems = [
     { path: '/bang-cong', icon: 'fas fa-calendar-check', label: 'Bảng công' },
-    { path: '/cham-cong-online', icon: 'fas fa-camera', label: 'Chấm công online' }
+    { path: '/cham-cong-online', icon: 'fas fa-camera', label: 'Chấm công online' },
+    { path: '/my-requests', icon: 'fas fa-file-signature', label: 'Đơn nghỉ & đề xuất' }
   ]
 
   const accountingItems = [
@@ -45,7 +46,7 @@ function Sidebar() {
     location.pathname === path || location.pathname.startsWith(`${path}/`)
 
   const renderItems = (items) =>
-    items.map(item => (
+    items.filter(item => item.path !== '/approvals' || user?.role === 'admin').map(item => (
       <Link
         key={item.path}
         to={item.path}

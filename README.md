@@ -43,6 +43,12 @@ ngẫu nhiên để nhận diện, còn đăng nhập hiện dùng email/mật k
 Vai trò nhân viên hiện lưu nội bộ là `user` (giao diện hiển thị “Nhân viên”)
 theo constraint và RLS hiện có; email là định danh đăng nhập, username là bí danh.
 
+Nhân viên gửi đơn nghỉ phép hoặc đề xuất tại `/my-requests` và theo dõi trạng
+thái tại đó. Admin công ty duyệt tại `/approvals`. API `/api/employee-requests`
+xác thực JWT, lấy `company_id` và danh tính người gửi từ hồ sơ phía server;
+nhân viên chỉ đọc đơn của mình, Admin chỉ xử lý đơn trong công ty của mình.
+Luồng đơn hiện lưu trạng thái duyệt và không tự ghi lại bảng công hay tính lương.
+
 ## Một link đăng nhập chung
 
 Mọi công ty dùng cùng một frontend và trang `/login`. Trước khi đăng nhập,

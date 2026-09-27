@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import CompanyLogo from '../components/CompanyLogo'
-import { GENERIC_HR_NAME, companyLogoSource } from '../utils/companyBrand'
+import { GENERIC_HR_NAME, setCompanyFavicon } from '../utils/companyBrand'
 import { isAccountingUser, isCoreStaffUser } from '../utils/staffAccess'
 import './Login.css'
 
@@ -21,8 +21,7 @@ function Login() {
 
   useEffect(() => {
     document.title = brandName
-    const icon = document.querySelector('link[rel="icon"]')
-    if (icon) icon.href = companyLogoSource(brandLogoUrl)
+    setCompanyFavicon(brandLogoUrl)
   }, [brandName, brandLogoUrl])
 
   const handleLogin = async event => {

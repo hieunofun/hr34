@@ -14,6 +14,7 @@ const HolidaySettings = lazy(() => import('./pages/HolidaySettings'))
 const Login = lazy(() => import('./pages/Login'))
 const MyAttendance = lazy(() => import('./pages/MyAttendance'))
 const OnlineAttendance = lazy(() => import('./pages/OnlineAttendance'))
+const Requests = lazy(() => import('./pages/Requests'))
 
 const AppLayout = () => <Layout><Outlet /></Layout>
 const STAFF_ROLES = [...CORE_STAFF_ROLES]
@@ -34,6 +35,12 @@ function App() {
           <Route element={<ProtectedRoute allowedRoles={['user']} />}>
             <Route element={<AppLayout />}>
               <Route path="/bang-cong" element={<MyAttendance />} />
+              <Route path="/my-requests" element={<Requests />} />
+            </Route>
+          </Route>
+          <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+            <Route element={<AppLayout />}>
+              <Route path="/approvals" element={<Requests />} />
             </Route>
           </Route>
           <Route element={<ProtectedRoute allowedRoles={STAFF_ROLES} allowAccounting />}>
@@ -58,7 +65,6 @@ function App() {
               <Route path="/kpi" element={<FeatureComingSoon />} />
               <Route path="/grading/:employeeId?" element={<FeatureComingSoon />} />
               <Route path="/tasks" element={<FeatureComingSoon />} />
-              <Route path="/approvals" element={<FeatureComingSoon />} />
             </Route>
           </Route>
         </Routes>
