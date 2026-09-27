@@ -9,7 +9,7 @@ export async function loadCompanySession(client, authUser) {
 
   const { data: profile, error: profileError } = await client
     .from('users')
-    .select('*')
+    .select('id,auth_user_id,company_id,employee_id,username,email,name,phone,branch,department,position,employment_status,status,shift,role,join_date,official_date,dob,cccd,identity_issue_date,identity_issue_place,address,hometown,gender,marital_status,notes,salary_mechanism,total_salary,avatar_url')
     .eq('auth_user_id', authUser.id)
     .single()
 

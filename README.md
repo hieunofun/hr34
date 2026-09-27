@@ -1,4 +1,4 @@
-# HR dùng chung cho nhiều công ty
+# App Chấm Công
 
 Một frontend kết nối database Supabase chung. Sau đăng nhập, ứng dụng đọc
 `auth.users.id → users.auth_user_id → users.company_id → companies.id` và dùng
@@ -20,6 +20,10 @@ Mặc định Vite chạy tại `http://localhost:3034`. Cấu hình
 ## Production trên Vercel
 
 Project HR dùng framework Vite, build `npm run build`, output `dist`. Đặt
+URL production chung là `https://appchamcong.vercel.app/login`. Source được
+đẩy lên `hieunofun/hr34` nhánh `main`; Vercel project `appchamcong` build từ Git.
+
+Đặt
 `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` và cấu hình Cloudinary công khai
 `VITE_CLOUDINARY_CLOUD_NAME`, `VITE_CLOUDINARY_UPLOAD_PRESET` trong Production
 Environment Variables. Không đặt service role hoặc API secret trong biến `VITE_*`.
@@ -27,10 +31,22 @@ Environment Variables. Không đặt service role hoặc API secret trong biến
 AI này tùy chọn; muốn bật cần `GROQ_API_KEY` hoặc `OPENAI_API_KEY` ở server.
 Đăng nhập hiện dùng email/mật khẩu, không dùng OAuth hoặc callback redirect.
 
+Để Admin công ty cấp tài khoản cho nhân viên từ form hồ sơ, đặt thêm
+`SUPABASE_SERVICE_ROLE_KEY` và `SUPABASE_URL` ở **server Environment Variables**
+của project HR. Không đặt hai giá trị này vào biến `VITE_*` hoặc file được Git
+theo dõi. Route `/api/employee-account` kiểm tra JWT Supabase, lấy công ty từ
+hồ sơ Admin ở server, chỉ liên kết hồ sơ `role=user` cùng công ty đã có mã nhân
+viên trong `nhan_su`. Form có thể lưu hồ sơ không có tài khoản; bật “Cấp tài khoản
+đăng nhập” sẽ tạo Supabase Auth user và lưu `auth_user_id`. Username được sinh
+ngẫu nhiên để nhận diện, còn đăng nhập hiện dùng email/mật khẩu. Mật khẩu ban
+đầu chỉ gửi tới Supabase Auth, không lưu trong `users.password`.
+Vai trò nhân viên hiện lưu nội bộ là `user` (giao diện hiển thị “Nhân viên”)
+theo constraint và RLS hiện có; email là định danh đăng nhập, username là bí danh.
+
 ## Một link đăng nhập chung
 
-Mọi công ty dùng cùng một frontend và trang `/login`. Trang đăng nhập dùng
-branding HR chung; sau đăng nhập, `CompanyContext` lấy tên, mã và URL logo từ
+Mọi công ty dùng cùng một frontend và trang `/login`. Trước khi đăng nhập,
+giao diện dùng tên và logo chung App Chấm Công; sau đăng nhập, `CompanyContext` lấy tên, mã và URL logo từ
 `companies` theo `users.company_id`. Quyền dữ liệu HR do hồ sơ đăng nhập và RLS
 quyết định. Không cần `public_id` hoặc migration cho link riêng.
 

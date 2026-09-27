@@ -75,6 +75,7 @@ export const calculateProgressiveTax = (assessableIncome) => {
 // List/directory query: skip documents, images, password (often huge JSON/base64).
 export const USERS_DIRECTORY_COLUMNS = [
   'id',
+  'auth_user_id',
   'employee_id',
   'username',
   'email',
@@ -153,6 +154,7 @@ export const mapUserToApp = (user) => {
   const companyId = user.company_id ?? user.companyId ?? null
   return {
     id: user.id,
+    auth_user_id: user.auth_user_id || null,
     company_id: companyId,
     companyId,
     company_name: user.company_name || user.companyName || '',
@@ -189,9 +191,6 @@ export const mapUserToApp = (user) => {
       : (Array.isArray(user.files) ? user.files : []),
     images: Array.isArray(user.images) ? user.images : [],
     profileComplete: Array.isArray(user.documents),
-    ...(Object.prototype.hasOwnProperty.call(user, 'password')
-      ? { hasPassword: Boolean(user.password) }
-      : {}),
     role: user.role || 'user',
     username: user.username || ''
   }

@@ -63,6 +63,35 @@ test('5. Sale shift uses its own standard for a full work unit', () => {
   assert.equal(result.regularWorkdays, 1)
 })
 
+test('a new company with only an administrative shift does not inherit Sale hours', () => {
+  const settings = normalizeAttendancePolicy({
+    workStart: '09:00', lunchStart: '12:00', lunchEnd: '13:00', workEnd: '18:00',
+    shifts: { administrative: { name: 'Ca Hành chính', start: '09:00', end: '18:00',
+      unpaidBreakMinutes: 60, standardWorkMinutes: 480 } }
+  })
+  assert.equal(settings.shifts.saleMorning, undefined)
+  const shift = resolveAttendanceShift({ department: 'Sale', shift: 'Ca ngày' },
+    { checkIn: '04:00' }, settings)
+  assert.equal(shift.start, '09:00')
+  assert.equal(shift.end, '18:00')
+})
+
+test('one shift can start overtime at its own configured time', () => {
+  const settings = normalizeAttendancePolicy({ ...office,
+    shifts: { saleMorning: { name: 'Ca Sáng Sale', start: '04:00', end: '13:30',
+      standardWorkMinutes: 480, unpaidBreakMinutes: 0, overtimeStart: '12:00' } } })
+  const saleShift = resolveAttendanceShift({ shift: 'Ca Sáng Sale' }, {}, settings)
+  const sale = metrics(settings, pair('04:00', '13:30'), { shift: saleShift })
+  assert.equal(sale.regularWorkdays, 1)
+  assert.equal(sale.hours, 9.5)
+  assert.equal(sale.overtimeHours, 1.5)
+  const officeShift = resolveAttendanceShift({ shift: 'Ca Hành chính' }, {}, settings)
+  assert.equal(metrics(settings, pair('07:00', '17:00'), { shift: officeShift }).overtimeHours, 0)
+  assert.equal(validateAttendancePolicy({ ...office, shifts: {
+    saleMorning: { name: 'Sale', start: '04:00', end: '13:30', overtimeStart: 'wrong' }
+  } }).isValid, false)
+})
+
 test('6. overnight shift counts worked time and early leave across midnight', () => {
   const settings = { workStart: '22:00', workEnd: '06:00', lunchStart: '02:00', lunchEnd: '02:30',
     unpaidBreakMinutes: 30, standardWorkMinutes: 450, allowOvernightShift: true }

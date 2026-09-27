@@ -9,7 +9,7 @@ function Layout({ children }) {
   const { companyName, logoUrl } = useCompany()
   const location = useLocation()
   useEffect(() => {
-    document.title = `${companyDisplayName(companyName)} · HR`
+    document.title = `${companyDisplayName(companyName)} · App Chấm Công`
     const icon = document.querySelector('link[rel="icon"]')
     if (icon) icon.href = companyLogoSource(logoUrl)
   }, [companyName, logoUrl])

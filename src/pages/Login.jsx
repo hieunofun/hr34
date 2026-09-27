@@ -20,7 +20,7 @@ function Login() {
   const from = location.state?.from?.pathname || '/'
 
   useEffect(() => {
-    document.title = `${brandName} · HR`
+    document.title = brandName
     const icon = document.querySelector('link[rel="icon"]')
     if (icon) icon.href = companyLogoSource(brandLogoUrl)
   }, [brandName, brandLogoUrl])

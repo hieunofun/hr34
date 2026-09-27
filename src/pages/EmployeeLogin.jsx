@@ -17,7 +17,7 @@ function EmployeeLogin() {
   const navigate = useNavigate()
 
   useEffect(() => {
-    document.title = `${brandName} · HR`
+    document.title = brandName
     const icon = document.querySelector('link[rel="icon"]')
     if (icon) icon.href = companyLogoSource(logoUrl)
   }, [brandName, logoUrl])

@@ -165,6 +165,8 @@ const normalizeConfiguredShift = (id, value, fallback) => {
     unpaidBreakMinutes: nonnegativeNumber(source.unpaidBreakMinutes, fallback.unpaidBreakMinutes ?? 0),
     standardWorkMinutes: positiveNumber(source.standardWorkMinutes, fallback.standardWorkMinutes ?? 0),
     workUnit: positiveNumber(source.workUnit, DEFAULT_ATTENDANCE_POLICY.standardWorkUnit),
+    overtimeStart: source.overtimeStart === 'shift_end'
+      ? 'shift_end' : (normalizeTime(source.overtimeStart) || null),
     allowOvernightShift: source.allowOvernightShift === true
   }
 }
@@ -285,6 +287,8 @@ export const normalizeAttendancePolicy = (settings = {}) => {
       .filter(item => /^\d{4}-\d{2}-\d{2}$/.test(item.date))
     : []
 
+  const hasDeclaredShifts = Boolean(source.shifts || source.shiftDefinitions)
+  const storedSaleShift = findStoredShift(ATTENDANCE_SHIFT_IDS.SALE_MORNING)
   const shifts = {
     [ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE]: normalizeConfiguredShift(
       ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE,
@@ -293,11 +297,13 @@ export const normalizeAttendancePolicy = (settings = {}) => {
       { name: 'Ca Hành chính', start: workStart, end: workEnd,
         unpaidBreakMinutes, standardWorkMinutes }
     ),
-    [ATTENDANCE_SHIFT_IDS.SALE_MORNING]: normalizeConfiguredShift(
-      ATTENDANCE_SHIFT_IDS.SALE_MORNING,
-      findStoredShift(ATTENDANCE_SHIFT_IDS.SALE_MORNING),
-      { ...SALE_ATTENDANCE_SHIFT, unpaidBreakMinutes: 30, standardWorkMinutes: 540 }
-    ),
+    ...((storedSaleShift || !hasDeclaredShifts) ? {
+      [ATTENDANCE_SHIFT_IDS.SALE_MORNING]: normalizeConfiguredShift(
+        ATTENDANCE_SHIFT_IDS.SALE_MORNING,
+        storedSaleShift,
+        { ...SALE_ATTENDANCE_SHIFT, unpaidBreakMinutes: 30, standardWorkMinutes: 540 }
+      )
+    } : {}),
     ...additionalShifts
   }
   const shiftDefinitions = Object.fromEntries(Object.entries(shifts).map(([id, shift]) => [id, {
@@ -427,6 +433,9 @@ export const validateAttendancePolicy = (settings = {}) => {
       return fail(`Ca ${shift.name || shift.id} qua đêm phải bật Cho phép ca qua đêm.`)
     }
     if (shift.standardWorkMinutes !== undefined && !(Number(shift.standardWorkMinutes) > 0)) return fail(`Chuẩn công của ca ${shift.name || shift.id} phải lớn hơn 0.`)
+    if (shift.overtimeStart && shift.overtimeStart !== 'shift_end' && time(shift.overtimeStart) === null) {
+      return fail(`Giờ bắt đầu tăng ca của ca ${shift.name || shift.id} không hợp lệ.`)
+    }
     if (shift.workUnit !== undefined && !(Number(shift.workUnit) > 0)) return fail(`Công đủ ca ${shift.name || shift.id} phải lớn hơn 0.`)
     if (shift.unpaidBreakMinutes !== undefined && (!Number.isFinite(Number(shift.unpaidBreakMinutes)) || Number(shift.unpaidBreakMinutes) < 0)) return fail(`Phút nghỉ của ca ${shift.name || shift.id} không hợp lệ.`)
     const shiftDuration = (shiftEndTime < shiftStart ? shiftEndTime + 1440 : shiftEndTime) - shiftStart
@@ -686,8 +695,9 @@ export const resolveAttendanceShift = (employee = {}, log = {}, settings = {}) =
   // Legacy fallback (deprecated): dữ liệu cũ thường gán "Ca full/Ca ngày"
   // cho mọi người. Chỉ suy luận Sale/Trang sau khi đã thử shift_id, tên ca
   // khớp cấu hình và giờ ca được gán. Hồ sơ mới nên gán ca rõ ràng.
-  if (employeeIsSale(employee, log, settings)) {
-    return configuredShiftFromName('Ca Sáng Sale', settings) || SALE_ATTENDANCE_SHIFT
+  if (employeeIsSale(employee, log, settings) &&
+    normalizeAttendanceShiftSettings(settings).shifts[ATTENDANCE_SHIFT_IDS.SALE_MORNING]) {
+    return configuredShiftFromName('Ca Sáng Sale', settings)
   }
   if (employeeConfiguredShift) return employeeConfiguredShift
   if (logConfiguredShift) return logConfiguredShift

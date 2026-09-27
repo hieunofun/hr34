@@ -113,7 +113,7 @@ function Employees() {
         if (!employee?.id) return employee
         const { data, error } = await supabase
             .from('users')
-            .select('*')
+            .select(`${USERS_DIRECTORY_COLUMNS},company_id,documents,images`)
             .eq('id', employee.id)
             .eq('company_id', companyId)
             .maybeSingle()
@@ -477,7 +477,6 @@ function Employees() {
                     sđt: pick(rowObj, 'sdt', 'so_dien_thoai', 'dien_thoai', 'phone'),
                     username: pick(rowObj, 'ten_dang_nhap', 'username', 'user_name'),
                     role: pick(rowObj, 'vai_tro', 'role') || 'user',
-                    password: pick(rowObj, 'mat_khau', 'password'),
                     chi_nhanh: pick(rowObj, 'chi_nhanh', 'branch'),
                     bo_phan: pick(rowObj, 'team', 'bo_phan', 'phong_ban', 'department'),
                     vi_tri: pick(rowObj, 'vi_tri', 'chuc_vu', 'position'),
@@ -541,6 +540,11 @@ function Employees() {
 
                 const dbPayload = { ...mapAppToUser(payload), company_id: companyId }
                 const existing = codeKey ? existingByCode.get(codeKey) : null
+                if (existing?.auth_user_id) {
+                    // Giữ định danh Auth đã cấp khi import lại hồ sơ.
+                    dbPayload.username = existing.username || dbPayload.username
+                    dbPayload.email = existing.email || dbPayload.email
+                }
 
                 let mutationResult
                 if (existing?.id) {
@@ -550,7 +554,6 @@ function Employees() {
                     )
                 } else {
                     dbPayload.id = crypto.randomUUID()
-                    dbPayload.password = payload.password || '123456'
                     if (!dbPayload.username) {
                         dbPayload.username = payload.employeeId || `nv${String(rowIndex).padStart(4, '0')}`
                     }
@@ -1170,7 +1173,7 @@ function Employees() {
                                     <li>SĐT</li>
                                     <li>Tên đăng nhập (tùy chọn)</li>
                                     <li>Vai trò (tùy chọn, mặc định user)</li>
-                                    <li>Mật khẩu (tùy chọn, mặc định 123456)</li>
+                                    <li>Tài khoản đăng nhập: cấp riêng trong hồ sơ nhân viên sau khi import</li>
                                     <li>Chi nhánh</li>
                                     <li>Bộ phận</li>
                                     <li>Vị trí</li>

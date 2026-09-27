@@ -80,7 +80,8 @@ test('recalculates the late report from actual punches and each employee shift',
     attendanceSettings: {
       workStart: '08:30',
       shifts: {
-        administrative: { standardCheckIn: '08:30', standardCheckOut: '17:30' }
+        administrative: { standardCheckIn: '08:30', standardCheckOut: '17:30' },
+        saleMorning: { standardCheckIn: '04:00', standardCheckOut: '13:30' }
       }
     }
   })

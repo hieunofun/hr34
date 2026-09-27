@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
+import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../services/supabase'
 import { fbGet } from '../services/firebase'
 import { requireTenantCompanyId } from '../services/tenantSession'
+import { provisionEmployeeAccount } from '../services/employeeAccount'
 import { mapAppToUser, runUsersMutationWithSchemaFallback } from '../utils/helpers'
 import {
   ATTENDANCE_SHIFT_IDS,
@@ -137,12 +139,15 @@ function EmployeeModal({
   departmentOptions = [],
   positionOptions = []
 }) {
+  const { user: currentUser } = useAuth()
+  const canGrantLogin = currentUser?.role === 'admin'
   const companyId = requireTenantCompanyId(requestedCompanyId)
   const [activeTab, setActiveTab] = useState('info')
   const [editingReadOnly, setEditingReadOnly] = useState(false)
   const [formData, setFormData] = useState({
     ho_va_ten: '',
     employeeId: '',
+    username: '',
     email: '',
     sđt: '',
     chi_nhanh: 'HCM',
@@ -173,6 +178,7 @@ function EmployeeModal({
   const [showPassword, setShowPassword] = useState(false)
   const [passwordError, setPasswordError] = useState('')
   const [hasExistingPassword, setHasExistingPassword] = useState(false)
+  const [grantLogin, setGrantLogin] = useState(false)
   const [employeeShiftOptions, setEmployeeShiftOptions] = useState(DEFAULT_EMPLOYEE_SHIFT_OPTIONS)
   const [shiftOptionsError, setShiftOptionsError] = useState('')
 
@@ -219,10 +225,12 @@ function EmployeeModal({
       const initialDocs = normalizedFiles.length > 0
         ? normalizedFiles
         : (readOnly ? [] : [{ name: '', url: '', attachments: [] }])
-      setHasExistingPassword(Boolean(employee.password || employee.hasPassword))
+      setHasExistingPassword(Boolean(employee.auth_user_id))
+      setGrantLogin(false)
       setFormData({
         ho_va_ten: employee.ho_va_ten || '',
         employeeId: employee.employeeId || '',
+        username: employee.username || '',
         email: employee.email || '',
         sđt: employee.sđt || employee.sdt || '',
         chi_nhanh: employee.chi_nhanh || 'HCM',
@@ -261,23 +269,11 @@ function EmployeeModal({
       setImagesPreview(employee.images || [])
       setFilesPreview(initialDocs)
 
-      if (employee.id && employee.hasPassword === undefined) {
-        supabase
-          .from('users')
-          .select('password')
-          .eq('id', employee.id)
-          .eq('company_id', companyId)
-          .maybeSingle()
-          .then(({ data }) => {
-            setHasExistingPassword(Boolean(data?.password))
-          })
-          .catch(() => {})
-      }
     } else {
       resetForm()
       generateEmployeeId()
       setHasExistingPassword(false)
-      setFormData(prev => ({ ...prev, password: '123456', passwordConfirm: '123456' }))
+      setGrantLogin(false)
     }
   }, [employee, isOpen, readOnly, companyId])
 
@@ -286,6 +282,7 @@ function EmployeeModal({
     setFormData({
       ho_va_ten: '',
       employeeId: '',
+      username: '',
       email: '',
       sđt: '',
       chi_nhanh: 'HCM',
@@ -307,8 +304,8 @@ function EmployeeModal({
       images: [],
       files: emptyDoc,
       role: 'user',
-      password: '123456',
-      passwordConfirm: '123456'
+      password: '',
+      passwordConfirm: ''
     })
     setAvatarPreview('')
     setImagesPreview([])
@@ -320,6 +317,7 @@ function EmployeeModal({
     setShowPassword(false)
     setPasswordError('')
     setHasExistingPassword(false)
+    setGrantLogin(false)
   }
 
   const editable = !readOnly || editingReadOnly
@@ -351,45 +349,16 @@ function EmployeeModal({
     }
   }
 
-  const resetPasswordDefault = () => {
-    setFormData(prev => ({
-      ...prev,
-      password: '123456',
-      passwordConfirm: '123456'
-    }))
-    setPasswordError('')
-    setShowPassword(true)
-  }
-
   const validatePasswordFields = () => {
+    if (!grantLogin) return undefined
     const pwd = (formData.password || '').trim()
     const confirm = (formData.passwordConfirm || '').trim()
-    const isCreate = !(employee && employee.id)
-
-    if (isCreate) {
-      if (!pwd) {
-        setPasswordError('Vui lòng nhập mật khẩu đăng nhập')
-        return null
-      }
-      if (pwd.length < 4) {
-        setPasswordError('Mật khẩu tối thiểu 4 ký tự')
-        return null
-      }
-      if (pwd !== confirm) {
-        setPasswordError('Xác nhận mật khẩu không khớp')
-        return null
-      }
-      return pwd
-    }
-
-    // Sửa: để trống = giữ nguyên mật khẩu cũ
-    if (!pwd && !confirm) return undefined
     if (!pwd) {
-      setPasswordError('Vui lòng nhập mật khẩu mới')
+      setPasswordError('Vui lòng nhập mật khẩu đăng nhập')
       return null
     }
-    if (pwd.length < 4) {
-      setPasswordError('Mật khẩu tối thiểu 4 ký tự')
+    if (pwd.length < 8) {
+      setPasswordError('Mật khẩu tối thiểu 8 ký tự')
       return null
     }
     if (pwd !== confirm) {
@@ -562,6 +531,16 @@ function EmployeeModal({
       setActiveTab('info')
       return
     }
+    if (grantLogin && formData.role !== 'user') {
+      setPasswordError('Chỉ cấp tài khoản nhân viên từ form này.')
+      setActiveTab('info')
+      return
+    }
+    if (grantLogin && !formData.email?.trim()) {
+      setPasswordError('Cần email để cấp tài khoản đăng nhập.')
+      setActiveTab('info')
+      return
+    }
 
     try {
       const oldStatus = employee ? (employee.trang_thai || employee.status || '') : ''
@@ -570,12 +549,10 @@ function EmployeeModal({
       const payloadForm = { ...formData, files: filledDocs }
       delete payloadForm.password
       delete payloadForm.passwordConfirm
+      let profileId = employee?.id || null
 
       if (employee && employee.id) {
         const dbPayload = { ...mapAppToUser(payloadForm), company_id: companyId }
-        if (nextPassword) {
-          dbPayload.password = nextPassword
-        }
         if (!employee.profileComplete) {
           delete dbPayload.documents
           delete dbPayload.images
@@ -618,8 +595,8 @@ function EmployeeModal({
         if ('id' in formData) delete formData.id
 
         const dbPayload = { ...mapAppToUser(payloadForm), company_id: companyId }
-        dbPayload.password = nextPassword || '123456'
         dbPayload.id = crypto.randomUUID()
+        profileId = dbPayload.id
 
         const mutationResult = await runUsersMutationWithSchemaFallback(
           (payload) => supabase
@@ -630,10 +607,43 @@ function EmployeeModal({
         const { error } = mutationResult
 
         if (error) throw error
+        const { data: matchingStaff, error: staffLookupError } = await supabase
+          .from('nhan_su').select('id').eq('company_id', companyId)
+          .eq('ma_nhan_vien', formData.employeeId).maybeSingle()
+        if (staffLookupError) throw staffLookupError
+        if (!matchingStaff) {
+          const { error: staffInsertError } = await supabase.from('nhan_su').insert([{
+            company_id: companyId,
+            ma_nhan_vien: formData.employeeId,
+            ho_ten: formData.ho_va_ten,
+            chuc_vu: formData.vi_tri || '',
+            bo_phan: formData.bo_phan || '',
+            ca_lam: formData.ca_lam_viec || 'Ca ngày',
+            trang_thai: formData.trang_thai || '',
+            so_dien_thoai: formData.sđt || '',
+            email: formData.email || ''
+          }])
+          if (staffInsertError) throw staffInsertError
+        }
+      }
+      let account = null
+      let accountError = null
+      if (grantLogin) {
+        if (formData.role !== 'user') throw new Error('Chỉ cấp tài khoản nhân viên từ form này.')
+        if (!formData.email?.trim()) throw new Error('Cần email để cấp tài khoản đăng nhập.')
+        try {
+          account = await provisionEmployeeAccount({
+            profileId, email: formData.email.trim(), password: nextPassword
+          })
+        } catch (error) {
+          accountError = error
+        }
       }
       onSave()
       onClose()
       resetForm()
+      if (accountError) alert(`Hồ sơ đã lưu nhưng chưa cấp được tài khoản: ${accountError.message}`)
+      else if (account) alert(`Đã cấp tài khoản. Email đăng nhập: ${account.email}. Username: ${account.username}.`)
     } catch (error) {
       alert('Lỗi khi lưu: ' + error.message)
     }
@@ -801,7 +811,7 @@ function EmployeeModal({
                       name="email"
                       value={formData.email}
                       onChange={handleChange}
-                      disabled={!editable}
+                      disabled={!editable || hasExistingPassword}
                       placeholder="dùng để đăng nhập hệ thống"
                     />
                   </div>
@@ -828,86 +838,42 @@ function EmployeeModal({
                 <div className="emp-password-box">
                   <div className="emp-password-box__head">
                     <div>
-                      <strong>Quản trị mật khẩu</strong>
-                      <p>
-                        {employee?.id
-                          ? (hasExistingPassword
-                              ? 'Tài khoản đã có mật khẩu. Để trống nếu không đổi.'
-                              : 'Chưa có mật khẩu — nhập mật khẩu mới bên dưới.')
-                          : 'Mật khẩu mặc định khi tạo mới: 123456 (có thể đổi).'}
-                      </p>
+                      <strong>Tài khoản đăng nhập</strong>
+                      <p>{hasExistingPassword
+                        ? 'Đã liên kết Supabase Auth. Đổi mật khẩu qua quy trình đặt lại mật khẩu.'
+                        : 'Có thể lưu hồ sơ trước rồi cấp tài khoản sau.'}</p>
                     </div>
-                    {employee?.id && (
-                      <span className={`emp-password-badge ${hasExistingPassword ? 'is-set' : 'is-empty'}`}>
-                        {hasExistingPassword ? 'Đã thiết lập' : 'Chưa có'}
-                      </span>
-                    )}
                   </div>
-
-                  {!editable ? (
+                  {!hasExistingPassword && canGrantLogin && (
+                    <label className="form-group">
+                      <input type="checkbox" checked={grantLogin}
+                        onChange={event => setGrantLogin(event.target.checked)} disabled={!editable} />
+                      {' '}Cấp tài khoản đăng nhập
+                    </label>
+                  )}
+                  {grantLogin && editable && (
                     <div className="form-row">
                       <div className="form-group">
-                        <label>Mật khẩu</label>
-                        <input type="password" value="********" disabled readOnly />
+                        <label>Mật khẩu ban đầu *</label>
+                        <div className="emp-password-input">
+                          <input type={showPassword ? 'text' : 'password'} name="password"
+                            value={formData.password} onChange={handleChange}
+                            minLength={8} maxLength={128} autoComplete="new-password" required />
+                          <button type="button" className="emp-password-toggle"
+                            onClick={() => setShowPassword(value => !value)}>
+                            <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                          </button>
+                        </div>
                       </div>
-                      <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
-                        <small className="text-muted">Nhấn “Sửa hồ sơ” để đổi / đặt lại mật khẩu</small>
+                      <div className="form-group">
+                        <label>Xác nhận mật khẩu *</label>
+                        <input type={showPassword ? 'text' : 'password'} name="passwordConfirm"
+                          value={formData.passwordConfirm} onChange={handleChange}
+                          minLength={8} maxLength={128} autoComplete="new-password" required />
                       </div>
                     </div>
-                  ) : (
-                    <>
-                      <div className="form-row">
-                        <div className="form-group">
-                          <label>
-                            {employee?.id ? 'Mật khẩu mới' : 'Mật khẩu *'}
-                          </label>
-                          <div className="emp-password-input">
-                            <input
-                              type={showPassword ? 'text' : 'password'}
-                              name="password"
-                              value={formData.password}
-                              onChange={handleChange}
-                              placeholder={employee?.id ? 'Để trống nếu giữ nguyên' : 'Nhập mật khẩu'}
-                              autoComplete="new-password"
-                              required={!employee?.id}
-                            />
-                            <button
-                              type="button"
-                              className="emp-password-toggle"
-                              onClick={() => setShowPassword(v => !v)}
-                              title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                            >
-                              <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
-                            </button>
-                          </div>
-                        </div>
-                        <div className="form-group">
-                          <label>Xác nhận mật khẩu{!employee?.id ? ' *' : ''}</label>
-                          <input
-                            type={showPassword ? 'text' : 'password'}
-                            name="passwordConfirm"
-                            value={formData.passwordConfirm}
-                            onChange={handleChange}
-                            placeholder="Nhập lại mật khẩu"
-                            autoComplete="new-password"
-                            required={!employee?.id}
-                          />
-                        </div>
-                      </div>
-                      <div className="emp-password-actions">
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={resetPasswordDefault}
-                        >
-                          <i className="fas fa-key"></i> Đặt lại mặc định (123456)
-                        </button>
-                        {passwordError && (
-                          <span className="emp-password-error">{passwordError}</span>
-                        )}
-                      </div>
-                    </>
                   )}
+                  {passwordError && <span className="emp-password-error">{passwordError}</span>}
                 </div>
 
                 <div className="form-row">

@@ -1,5 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="HR">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="App Chấm Công">
   <rect width="128" height="128" rx="28" fill="#1764ad"/>
-  <path d="M27 34v60m0-30h33m0-30v60" fill="none" stroke="#fff" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M78 94V35h18c13 0 19 7 19 17 0 9-6 15-19 15H78m19 0 20 27" fill="none" stroke="#fff" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="64" cy="64" r="39" fill="none" stroke="#fff" stroke-width="9"/>
+  <path d="M64 39v26l17 10" fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="64" cy="64" r="5" fill="#fff"/>
 </svg>

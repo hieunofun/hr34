@@ -1,5 +1,5 @@
 export const GENERIC_HR_LOGO = '/hr-generic-logo.svg'
-export const GENERIC_HR_NAME = 'Hệ thống nhân sự'
+export const GENERIC_HR_NAME = 'App Chấm Công'
 
 export function companyLogoSource(logoUrl) {
   const value = String(logoUrl || '').trim()

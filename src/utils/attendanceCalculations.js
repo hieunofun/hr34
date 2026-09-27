@@ -408,8 +408,9 @@ export const calculateAttendanceMetrics = ({
     : Math.max(0, shiftMinutes - lunchMinutes - Math.min(extraBreak, shiftMinutes - lunchMinutes))
 
   const automaticAllowed = autoCalculateOvertime && resolvedSettings.overtimeEnabled && !log.overtimeAutoDisabled
-  const overtimeStart = resolvedSettings.overtimeStart === 'shift_end' ? endMinute
-    : minuteOnShiftDay(resolvedSettings.overtimeStart, startMinute, overnight && overnightAllowed)
+  const overtimeRule = selectedShift?.overtimeStart || resolvedSettings.overtimeStart
+  const overtimeStart = overtimeRule === 'shift_end' ? endMinute
+    : minuteOnShiftDay(overtimeRule, startMinute, overnight && overnightAllowed)
   const lastEnd = Math.max(...usablePairs.map(pair => pair.end))
   const autoOvertimeMinutes = automaticAllowed && overtimeStart !== null
     ? roundOvertime(Math.max(0, lastEnd - overtimeStart), resolvedSettings) : 0

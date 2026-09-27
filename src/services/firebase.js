@@ -268,7 +268,6 @@ async function pushEmployee(payload, companyId) {
   const id = crypto.randomUUID()
   const dbPayload = mapAppToUser(payload || {}) || {}
   dbPayload.id = id
-  if (!dbPayload.password) dbPayload.password = payload?.password || '123456'
   if (!dbPayload.employee_id && payload?.employeeId) {
     dbPayload.employee_id = payload.employeeId
   }

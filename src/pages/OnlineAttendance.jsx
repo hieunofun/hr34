@@ -87,8 +87,6 @@ function OnlineAttendance() {
   const [selectedShiftId, setSelectedShiftId] = useState(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
   const [cloudNameInput, setCloudNameInput] = useState('')
   const [cloudPresetInput, setCloudPresetInput] = useState('')
-  const [adminPin, setAdminPin] = useState('')
-  const [isUnlocked, setIsUnlocked] = useState(false)
 
   // 5. Lịch sử chấm công (List) & Bộ lọc tháng
   const [historyLogs, setHistoryLogs] = useState([])
@@ -382,8 +380,8 @@ function OnlineAttendance() {
 
   // Lưu cài đặt ca
   const saveShiftSettings = async () => {
-    if (!isAdminOrManager && !isUnlocked) {
-      alert('Chỉ Quản trị viên / Sếp mới có quyền thay đổi cài đặt ca! Vui lòng nhập mã PIN (123456) để mở khóa.')
+    if (!isAdminOrManager) {
+      alert('Chỉ Quản trị viên / Quản lý mới được thay đổi cài đặt ca.')
       return
     }
     const invalidShift = getAttendanceShiftOptions(shiftDrafts).find(
@@ -410,6 +408,7 @@ function OnlineAttendance() {
   }
 
   const openShiftSettings = () => {
+    if (!isAdminOrManager) return
     setShiftDrafts(normalizeAttendanceShiftSettings(attendanceSettings))
     setSelectedShiftId(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
     setShowShiftModal(true)
@@ -448,14 +447,14 @@ function OnlineAttendance() {
           </p>
         </div>
         <div className="oa-header-actions">
-          <button
+          {isAdminOrManager && <button
             type="button"
             className="oa-btn-settings"
             onClick={openShiftSettings}
             title="Cài đặt ca làm việc & Cloudinary"
           >
             ⚙️ Cài đặt ca
-          </button>
+          </button>}
           <Link className="oa-btn-view" to={isAdminOrManager ? '/bang-cong-preview' : '/bang-cong'}>
             Xem bảng công
           </Link>
@@ -770,7 +769,7 @@ function OnlineAttendance() {
       </div>
 
       {/* Modal Cài đặt ca làm việc & Cloudinary */}
-      {showShiftModal && (
+      {showShiftModal && isAdminOrManager && (
         <div className="oa-modal-overlay" onClick={() => setShowShiftModal(false)}>
           <div className="oa-modal-box" onClick={e => e.stopPropagation()}>
             <div className="oa-modal-header">
@@ -781,44 +780,6 @@ function OnlineAttendance() {
             </div>
 
             <div className="oa-modal-body">
-              {!isAdminOrManager && !isUnlocked && (
-                <div style={{ background: '#fffbeb', border: '1px solid #fde68a', padding: '12px 14px', borderRadius: '8px', marginBottom: '16px' }}>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#92400e', marginBottom: '4px' }}>
-                    🔒 Quyền Quản lý / Sếp:
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#78350f', marginBottom: '8px' }}>
-                    Nhân viên không thể tự sửa ca làm việc. Để chỉnh sửa, vui lòng nhập mã PIN Sếp (<strong>123456</strong>):
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <input
-                      type="password"
-                      placeholder="Nhập mã PIN sếp..."
-                      value={adminPin}
-                      onChange={e => setAdminPin(e.target.value)}
-                      style={{ padding: '6px 10px', fontSize: '13px', borderRadius: '6px', border: '1px solid #d1d5db', flex: 1 }}
-                    />
-                    <button
-                      type="button"
-                      style={{ padding: '6px 14px', background: '#d97706', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer' }}
-                      onClick={() => {
-                        if (adminPin === '123456' || adminPin === 'admin') {
-                          setIsUnlocked(true)
-                        } else {
-                          alert('Mã PIN sếp không chính xác!')
-                        }
-                      }}
-                    >
-                      Mở khóa
-                    </button>
-                  </div>
-                </div>
-              )}
-              {(!isAdminOrManager && isUnlocked) && (
-                <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '8px 12px', borderRadius: '6px', marginBottom: '14px', color: '#065f46', fontSize: '12px', fontWeight: 600 }}>
-                  ✓ Đã mở khóa quyền Sếp thành công! Bạn có thể chỉnh sửa ca và Cloudinary bên dưới.
-                </div>
-              )}
-
               <h4>1. Cài đặt Giờ vào / Giờ ra theo ca</h4>
               <div className="oa-preset-shifts">
                 {shiftOptions.map(shift => (
@@ -826,7 +787,7 @@ function OnlineAttendance() {
                     key={shift.id}
                     type="button"
                     className={`oa-shift-chip ${selectedShiftId === shift.id ? 'is-active' : ''}`}
-                    disabled={!isAdminOrManager && !isUnlocked}
+                    disabled={!isAdminOrManager}
                     onClick={() => setSelectedShiftId(shift.id)}
                   >
                     {shift.name} ({shift.standardCheckIn} - {shift.standardCheckOut})
@@ -839,7 +800,7 @@ function OnlineAttendance() {
                   <label>Giờ vào chuẩn (Bắt đầu ca)</label>
                   <input
                     type="time"
-                    disabled={!isAdminOrManager && !isUnlocked}
+                    disabled={!isAdminOrManager}
                     value={selectedShift?.standardCheckIn || ''}
                     onChange={e => updateSelectedShift('standardCheckIn', e.target.value)}
                   />
@@ -848,7 +809,7 @@ function OnlineAttendance() {
                   <label>Giờ ra chuẩn (Kết thúc ca)</label>
                   <input
                     type="time"
-                    disabled={!isAdminOrManager && !isUnlocked}
+                    disabled={!isAdminOrManager}
                     value={selectedShift?.standardCheckOut || ''}
                     onChange={e => updateSelectedShift('standardCheckOut', e.target.value)}
                   />
@@ -863,7 +824,7 @@ function OnlineAttendance() {
                 <label>Cloud Name</label>
                 <input
                   type="text"
-                  disabled={!isAdminOrManager && !isUnlocked}
+                  disabled={!isAdminOrManager}
                   placeholder="Ví dụ: ksny3wwy"
                   value={cloudNameInput}
                   onChange={e => setCloudNameInput(e.target.value)}
@@ -873,7 +834,7 @@ function OnlineAttendance() {
                 <label>Upload Preset (Unsigned)</label>
                 <input
                   type="text"
-                  disabled={!isAdminOrManager && !isUnlocked}
+                  disabled={!isAdminOrManager}
                   placeholder="Ví dụ: nr5kwa0r"
                   value={cloudPresetInput}
                   onChange={e => setCloudPresetInput(e.target.value)}
@@ -888,7 +849,7 @@ function OnlineAttendance() {
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={!isAdminOrManager && !isUnlocked}
+                disabled={!isAdminOrManager}
                 onClick={saveShiftSettings}
               >
                 Lưu cài đặt
