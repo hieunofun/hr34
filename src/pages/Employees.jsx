@@ -354,7 +354,8 @@ function Employees() {
     }
 
     const handleImportExcel = async (event) => {
-        const file = event.target.files?.[0]
+        const input = event.target
+        const file = input.files?.[0]
         if (!file) return
 
         const readWorkbook = async (XLSX) => {
@@ -620,6 +621,7 @@ function Employees() {
             alert('Lỗi import: ' + error.message)
         } finally {
             setLoading(false)
+            input.value = ''
             if (fileInputRef.current) fileInputRef.current.value = ''
         }
     }
