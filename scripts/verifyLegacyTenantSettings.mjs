@@ -138,6 +138,11 @@ for (const number of [22, 23, 31]) {
         return { in: log.checkIn || log.vao, out: log.checkOut || log.ra,
           old: read(null), current: read(policy), legacyCandidate: read(legacySaleCandidate) }
       }) }
+    assert.equal(saleAudit.logs, 15)
+    assert.equal(saleAudit.completePunchPairs, 2)
+    assert.ok(saleAudit.samples.every(sample => sample.current.work === 1 &&
+      sample.current.hours === 9 && sample.current.ot === 0),
+    'Company 22 Sale: historical complete punches must display 9 hours under current policy')
   }
   console.log(JSON.stringify({ company: number, auth: 'pass', companySession: 'pass', settings: 'pass',
     branding: 'pass', hrData: 'pass', fullShiftWorkUnits: metrics.regularWorkdays,

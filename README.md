@@ -63,3 +63,9 @@ Admin và chỉ URL HTTPS được lưu trong `companies.logo_url`.
 
 `supabase/01_create_company_34.sql` là script lịch sử của bản HR34; không dùng
 script đó khi thêm công ty mới.
+
+Với Company 22, quyết định nghiệp vụ cho 15 log Sale lịch sử là **dùng policy
+hiện tại**: hai log có đủ lượt chấm hiển thị 9 giờ, 1 công và 0 OT. Số giờ theo
+cách tính cũ là 13,73 và 18,45 giờ. `scripts/verifyLegacyTenantSettings.mjs`
+kiểm tra kết quả này ở chế độ chỉ đọc; không sửa log gốc, bảng công đã lưu hoặc
+`policySnapshot`.
