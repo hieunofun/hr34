@@ -1,13 +1,6 @@
-export const DEFAULT_PENALTY_CATEGORIES = [
-  { key: 'late_under_30', label: 'Muộn/sớm <30p', amount: 50000 },
-  { key: 'late_over_30', label: 'Muộn/sớm ≥30p', amount: 100000 },
-  { key: 'missing_punch', label: 'Quên chấm', amount: 50000 },
-  { key: 'no_duty', label: 'Không trực nhật', amount: 50000 },
-  { key: 'emergency_leave', label: 'Nghỉ đột xuất', amount: 100000 },
-  { key: 'unapproved_absence', label: 'Nghỉ không phép', amount: 200000 },
-  { key: 'drunk', label: 'Say xỉn', amount: 200000 },
-  { key: 'other', label: 'Khác', amount: 0 }
-]
+import { DEFAULT_ATTENDANCE_POLICY, DEFAULT_ATTENDANCE_PENALTY_CATEGORIES } from './attendanceShift.js'
+
+export const DEFAULT_PENALTY_CATEGORIES = DEFAULT_ATTENDANCE_PENALTY_CATEGORIES
 
 export const PENALTY_CATEGORIES = DEFAULT_PENALTY_CATEGORIES
 
@@ -53,7 +46,8 @@ export const createPenaltyCategory = (partial = {}) => ({
 
 const findCategory = (categories, key) => {
   const list = normalizePenaltyCategories(categories)
-  return list.find(item => item.key === key) || DEFAULT_PENALTY_CATEGORIES.find(item => item.key === key)
+  return list.find(item => item.key === key) || (Array.isArray(categories) && categories.length > 0
+    ? null : DEFAULT_PENALTY_CATEGORIES.find(item => item.key === key))
 }
 
 export const createEmptyPenaltyRow = (monthValue = '', categories = DEFAULT_PENALTY_CATEGORIES) => {
@@ -99,7 +93,8 @@ const autoRow = ({ employeeId, employeeCode, employeeName, date, suffix, categor
   source: 'auto'
 })
 
-export const buildPenaltyDetailRows = (summaryRows = [], categories = DEFAULT_PENALTY_CATEGORIES) => {
+export const buildPenaltyDetailRows = (summaryRows = [], categories = DEFAULT_PENALTY_CATEGORIES,
+  thresholdMinutes = DEFAULT_ATTENDANCE_POLICY.latePenaltyThresholdMinutes) => {
   const lateUnder = findCategory(categories, 'late_under_30')
   const lateOver = findCategory(categories, 'late_over_30')
   const missingPunch = findCategory(categories, 'missing_punch')
@@ -116,8 +111,8 @@ export const buildPenaltyDetailRows = (summaryRows = [], categories = DEFAULT_PE
       const lateMinutes = Number(day.lateMinutes || 0)
       const earlyMinutes = Number(day.earlyMinutes || 0)
 
-      if (day.late && lateMinutes > 0) {
-        const over30 = lateMinutes >= 30
+      if (day.late && lateMinutes > 0 && lateUnder && lateOver) {
+        const over30 = lateMinutes >= thresholdMinutes
         details.push(autoRow({
           employeeId,
           employeeCode,
@@ -129,8 +124,8 @@ export const buildPenaltyDetailRows = (summaryRows = [], categories = DEFAULT_PE
         }))
       }
 
-      if (day.early && earlyMinutes > 0) {
-        const over30 = earlyMinutes >= 30
+      if (day.early && earlyMinutes > 0 && lateUnder && lateOver) {
+        const over30 = earlyMinutes >= thresholdMinutes
         details.push(autoRow({
           employeeId,
           employeeCode,
@@ -142,7 +137,7 @@ export const buildPenaltyDetailRows = (summaryRows = [], categories = DEFAULT_PE
         }))
       }
 
-      if (day.missingPunch) {
+      if (day.missingPunch && missingPunch) {
         details.push(autoRow({
           employeeId,
           employeeCode,
@@ -154,7 +149,7 @@ export const buildPenaltyDetailRows = (summaryRows = [], categories = DEFAULT_PE
         }))
       }
 
-      if (day.unapprovedAbsence) {
+      if (day.unapprovedAbsence && unapprovedAbsence) {
         details.push(autoRow({
           employeeId,
           employeeCode,

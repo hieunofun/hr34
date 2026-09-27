@@ -87,15 +87,25 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
   const sampleLog = logs[0] || {}
   const resolvedShift = resolveAttendanceShift(employee, sampleLog, attendanceSettings)
   const normalizedSettings = normalizeAttendanceShiftSettings(attendanceSettings)
-  const standardCheckIn = normalizedSettings.workStart || formatAttendanceTime(resolvedShift?.start || resolvedShift?.standardCheckIn)
-  const standardCheckOut = normalizedSettings.workEnd || formatAttendanceTime(resolvedShift?.end || resolvedShift?.standardCheckOut)
+  const standardCheckIn = formatAttendanceTime(resolvedShift?.start || resolvedShift?.standardCheckIn) || normalizedSettings.workStart
+  const standardCheckOut = formatAttendanceTime(resolvedShift?.end || resolvedShift?.standardCheckOut) || normalizedSettings.workEnd
+  const importValuesAllowed = normalizedSettings.importPriorityMode !== 'raw_punch' ||
+    normalizedSettings.workUnitCalculationMode === 'imported'
 
   logs.forEach(sourceLog => {
-    const preservesSourceValues = ['source-value', 'matrix-value'].includes(sourceLog.calculationMode)
+    const rawPunchPresent = !sourceLog.syntheticPunch && !sourceLog.isDerivedFromCode && Boolean(
+      formatAttendanceTime(sourceLog.checkIn || sourceLog.vao) ||
+      formatAttendanceTime(sourceLog.checkOut || sourceLog.ra) ||
+      (Array.isArray(sourceLog.punchPairs) && sourceLog.punchPairs.length)
+    )
+    const preservesSourceValues = ['source-value', 'matrix-value'].includes(sourceLog.calculationMode) &&
+      (importValuesAllowed || !rawPunchPresent) &&
+      (normalizedSettings.missingPunchPolicy !== 'manual_review' || !rawPunchPresent)
     const log = preservesSourceValues
       ? sourceLog
       : applyCalculatedAttendanceTiming(sourceLog, employee, attendanceSettings)
-    const logHours = numberValue(log.hours ?? log.soGio ?? log.gio ?? log.tongGio ?? (
+    const logHours = numberValue((normalizedSettings.importPriorityMode === 'imported_hours' ? log.importedHours : undefined) ??
+      log.hours ?? log.soGio ?? log.gio ?? log.tongGio ?? (
       numberValue(log.hours ?? log.soGio ?? log.gio) +
       numberValue(log.gioPlus)
     ))
@@ -105,7 +115,7 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
     const hasCheckIn = Boolean(logCheckIn)
     const hasCheckOut = Boolean(logCheckOut)
     const isSyntheticPunch = Boolean(log.syntheticPunch || log.isDerivedFromCode)
-    const useSourceValues = ['source-value', 'matrix-value'].includes(log.calculationMode)
+    const useSourceValues = preservesSourceValues
     if (useSourceValues) calculationMode = log.calculationMode
     if (!isSyntheticPunch) {
       lateMinutes += numberValue(log.lateMinutes ?? log.vaoTre)
@@ -161,7 +171,8 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
 
     // Khi có Vào/Ra thật, Công phải được tính lại từ số phút; chỉ giữ cong
     // nguồn cho dòng mã công không có cặp punch.
-    if (hasNumericValue(log.cong) && (useSourceValues || !hasCheckIn || !hasCheckOut || isSyntheticPunch)) {
+    if (hasNumericValue(log.cong) && (useSourceValues || !rawPunchPresent || importValuesAllowed) &&
+      (normalizedSettings.missingPunchPolicy !== 'manual_review' || !rawPunchPresent)) {
       workdays += numberValue(log.cong)
       hasSourceWorkday = true
     }
@@ -171,12 +182,8 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
     }
   })
 
-  const standardMinutes = Number(normalizedSettings.standardWorkMinutes) > 0
-    ? Number(attendanceSettings.standardWorkMinutes)
-    : STANDARD_WORK_MINUTES
-  const breakMinutes = Number(normalizedSettings.unpaidBreakMinutes) >= 0
-    ? Number(attendanceSettings.unpaidBreakMinutes)
-    : 0
+  const standardMinutes = Number(normalizedSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES
+  const breakMinutes = Number(normalizedSettings.unpaidBreakMinutes) || 0
   const autoCalculateOvertime = normalizedSettings?.overtime?.autoCalculate !== false
   if (actualPunches.length > 0) {
     const firstPunch = actualPunches
@@ -200,13 +207,16 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
       breakMinutes,
       autoCalculateOvertime,
       punchPairs: logs.flatMap(attendancePunchPairs),
-      splitShift: resolvedShift?.splitShift
+      splitShift: resolvedShift?.splitShift,
+      shift: resolvedShift
     })
     hours = metrics.hours
     workdays = metrics.regularWorkdays
     overtimeHours = metrics.overtimeHours
     calculationMode = metrics.calculationMode || 'full-day'
     splitShiftBreakdown = metrics.splitShiftBreakdown || []
+    missingPunch = missingPunch || metrics.requiresManualReview === true ||
+      (metrics.hasPunchPair === false && normalizedSettings.requiredPunchPairs > 1)
   } else if (!hasSourceWorkday) {
     const metrics = calculateAttendanceMetrics({
       log: logs[0] || {},
@@ -214,16 +224,28 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
       standardMinutes,
       breakMinutes,
       autoCalculateOvertime,
-      fallbackHours: sourceHours
+      fallbackHours: sourceHours,
+      shift: resolvedShift
     })
     hours = metrics.hours
     workdays = metrics.regularWorkdays
     overtimeHours = metrics.overtimeHours
   } else {
     hours = sourceHours
+    if (normalizedSettings.importPriorityMode === 'imported_hours') {
+      const shiftDefinition = Object.values(normalizedSettings.shiftDefinitions).find(shift =>
+        shift.name === resolvedShift?.name ||
+        (shift.start === resolvedShift?.start && shift.end === resolvedShift?.end))
+      const sourceStandard = Number(shiftDefinition?.standardWorkMinutes) > 0
+        ? Number(shiftDefinition.standardWorkMinutes) : standardMinutes
+      const shiftWorkUnit = Number(shiftDefinition?.workUnit) > 0
+        ? Number(shiftDefinition.workUnit) : normalizedSettings.standardWorkUnit
+      workdays = Math.min(normalizedSettings.maxWorkUnitPerDay, sourceHours * 60 / sourceStandard * shiftWorkUnit)
+    }
     overtimeHours = logs.reduce((sum, log) => sum +
       numberValue(log.tc1) + numberValue(log.tc2) + numberValue(log.tc3), 0)
   }
+  workdays = Math.min(normalizedSettings.maxWorkUnitPerDay, Math.max(0, workdays))
 
   const holiday = getAttendanceHoliday(date, attendanceSettings)
   const hoursExact = Math.max(0, hours)
@@ -332,6 +354,7 @@ export const buildAttendanceSummary = ({
   attendanceSettings = {}
 }) => {
   if (!month) return []
+  const policy = normalizeAttendanceShiftSettings(attendanceSettings)
 
   const employeesById = new Map(
     employees.map(employee => [String(employee.id), employee])
@@ -538,6 +561,8 @@ export const buildAttendanceSummary = ({
         attendanceSettings,
         date
       )
+      if (policy.manualOverridePriority === 'none' ||
+        (policy.manualOverridePriority === 'allowed' && Number(current.workdaysExact ?? current.workdays) > 0)) return
       const workdays = numberValue(rawValue)
       const isPaidLeaveDay = permissionDays.includes(day)
       row.days.set(date, {
@@ -574,12 +599,12 @@ export const buildAttendanceSummary = ({
       row.overtimeHours += day.overtimeHours
       row.attendanceDays += day.hasPunch || dayWorkdays > 0 ? 1 : 0
       row.lateCount += day.late ? 1 : 0
-      row.lateUnder30Count += day.late && day.lateMinutes < 30 ? 1 : 0
-      row.lateOver30Count += day.late && day.lateMinutes >= 30 ? 1 : 0
+      row.lateUnder30Count += day.late && day.lateMinutes < policy.latePenaltyThresholdMinutes ? 1 : 0
+      row.lateOver30Count += day.late && day.lateMinutes >= policy.latePenaltyThresholdMinutes ? 1 : 0
       row.lateMinutes += day.lateMinutes
       row.earlyCount += day.early ? 1 : 0
-      row.earlyUnder30Count += day.early && day.earlyMinutes < 30 ? 1 : 0
-      row.earlyOver30Count += day.early && day.earlyMinutes >= 30 ? 1 : 0
+      row.earlyUnder30Count += day.early && day.earlyMinutes < policy.latePenaltyThresholdMinutes ? 1 : 0
+      row.earlyOver30Count += day.early && day.earlyMinutes >= policy.latePenaltyThresholdMinutes ? 1 : 0
       row.earlyMinutes += day.earlyMinutes
       row.missingPunchCount += day.missingPunch ? 1 : 0
       row.unapprovedAbsenceCount += day.unapprovedAbsence ? 1 : 0

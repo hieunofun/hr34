@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import EmployeeDirectory from '../components/EmployeeDirectory'
 import { supabase } from '../services/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { getCompanyIdForUser } from '../utils/companyContext'
+import { useCompany } from '../contexts/CompanyContext'
 import { formatDateDisplay, getEmployeeEmploymentStatus, mapAppToUser, mapUserToApp, parseFlexibleDate, runUsersMutationWithSchemaFallback, USERS_DIRECTORY_COLUMNS, getMissingUsersColumnFromError } from '../utils/helpers'
 
 const loadXlsx = () => import('xlsx')
@@ -68,7 +68,7 @@ const EMPLOYEE_EXCEL_HEADERS = [
 
 function Employees() {
     const { user } = useAuth()
-    const companyId = getCompanyIdForUser(user)
+    const { companyId } = useCompany()
     const [employees, setEmployees] = useState([])
     const [filteredEmployees, setFilteredEmployees] = useState([])
     const [loading, setLoading] = useState(true)

@@ -3,7 +3,9 @@ import { fbPush, fbUpdate } from '../services/firebase'
 import { normalizeString } from '../utils/helpers'
 import {
   calculateAttendanceTiming,
-  formatAttendanceTime
+  formatAttendanceTime,
+  normalizeAttendancePolicy,
+  resolveAttendanceShift
 } from '../utils/attendanceShift'
 import {
   calculateAttendanceMetrics,
@@ -24,7 +26,8 @@ function dayOfWeekFromDate(dateStr) {
   return DAY_NAMES[d.getDay()] || ''
 }
 
-function emptyForm(today) {
+function emptyForm(today, settings = {}) {
+  const policy = normalizeAttendancePolicy(settings)
   return {
     employeeId: '',
     employeeCode: '',
@@ -34,10 +37,10 @@ function emptyForm(today) {
     position: '',
     date: today,
     dayOfWeek: dayOfWeekFromDate(today),
-    checkIn: '08:00',
-    checkOut: '17:30',
-    cong: 1,
-    hours: 8,
+    checkIn: policy.workStart,
+    checkOut: policy.workEnd,
+    cong: policy.standardWorkUnit,
+    hours: policy.standardWorkMinutes / 60,
     congPlus: 0,
     gioPlus: 0,
     lateMinutes: 0,
@@ -48,7 +51,7 @@ function emptyForm(today) {
     shiftName: '',
     kyHieu: '',
     kyHieuPlus: '',
-    tongGio: 8,
+    tongGio: policy.standardWorkMinutes / 60,
     status: 'Đủ'
   }
 }
@@ -62,7 +65,7 @@ function AttendanceModal({
   onSave,
   readOnly = false
 }) {
-  const [formData, setFormData] = useState(() => emptyForm(new Date().toISOString().split('T')[0]))
+  const [formData, setFormData] = useState(() => emptyForm(new Date().toISOString().split('T')[0], attendanceSettings))
   const [searchTerm, setSearchTerm] = useState('')
   const [showDropdown, setShowDropdown] = useState(false)
 
@@ -109,15 +112,19 @@ function AttendanceModal({
 
   const resetForm = () => {
     const today = new Date().toISOString().split('T')[0]
-    setFormData(emptyForm(today))
+    setFormData(emptyForm(today, attendanceSettings))
     setSearchTerm('')
     setShowDropdown(false)
   }
 
-  const calculateHours = (checkIn, checkOut) => {
+  const calculateHours = (checkIn, checkOut, log = formData) => {
+    const employee = employees.find(item => item.id === log.employeeId) || {}
     return calculateAttendanceMetrics({
+      log,
       checkIn,
       checkOut,
+      attendanceSettings,
+      shift: resolveAttendanceShift(employee, log, attendanceSettings),
       standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
       breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
       autoCalculateOvertime: false
@@ -160,22 +167,25 @@ function AttendanceModal({
     }
 
     if (name === 'checkIn' || name === 'checkOut' || name === 'shiftName') {
-      const hours = calculateHours(updated.checkIn, updated.checkOut)
+      const hours = calculateHours(updated.checkIn, updated.checkOut, updated)
       updated.hours = hours
+      const employee = employees.find(item => item.id === updated.employeeId) || {}
       const metrics = calculateAttendanceMetrics({
+        log: updated,
         checkIn: updated.checkIn,
         checkOut: updated.checkOut,
+        attendanceSettings,
+        shift: resolveAttendanceShift(employee, updated, attendanceSettings),
         standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
         breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
         autoCalculateOvertime: false
       })
       updated.cong = roundDecimal(metrics.regularWorkdays)
       updated.tongGio = roundDecimal(hours + Number(updated.gioPlus || 0))
-      if (hours >= 8) updated.status = 'Đủ'
+      if (metrics.regularWorkdays >= normalizeAttendancePolicy(attendanceSettings).standardWorkUnit) updated.status = 'Đủ'
       else if (hours > 0) updated.status = 'Thiếu'
       else updated.status = 'Vắng'
       if (!updated.kyHieu) updated.kyHieu = updated.status
-      const employee = employees.find(item => item.id === updated.employeeId) || {}
       const timing = calculateAttendanceTiming({
         employee,
         log: updated,
@@ -220,6 +230,8 @@ function AttendanceModal({
         log: formData,
         checkIn: formData.checkIn,
         checkOut: formData.checkOut,
+        attendanceSettings,
+        shift: resolveAttendanceShift(employees.find(item => item.id === formData.employeeId) || {}, formData, attendanceSettings),
         standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
         breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
         autoCalculateOvertime: false,

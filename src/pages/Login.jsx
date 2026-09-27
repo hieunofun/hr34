@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import CompanyLogo from '../components/CompanyLogo'
+import { GENERIC_HR_NAME, companyLogoSource } from '../utils/companyBrand'
 import { isAccountingUser, isCoreStaffUser } from '../utils/staffAccess'
 import './Login.css'
 
@@ -11,9 +13,17 @@ function Login() {
   const [error, setError] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const { login } = useAuth()
+  const brandName = GENERIC_HR_NAME
+  const brandLogoUrl = null
   const navigate = useNavigate()
   const location = useLocation()
   const from = location.state?.from?.pathname || '/'
+
+  useEffect(() => {
+    document.title = `${brandName} · HR`
+    const icon = document.querySelector('link[rel="icon"]')
+    if (icon) icon.href = companyLogoSource(brandLogoUrl)
+  }, [brandName, brandLogoUrl])
 
   const handleLogin = async event => {
     event.preventDefault()
@@ -60,9 +70,9 @@ function Login() {
       <section className="system-login__form-panel">
         <div className="system-login__form-wrap">
           <div className="system-login__intro">
-            <img src="/hr-logo.svg" alt="HR34" />
+            <CompanyLogo logoUrl={brandLogoUrl} alt="" />
             <h1>Đăng nhập hệ thống</h1>
-            <p>Hệ thống quản lý nhân sự HR34</p>
+            <p>{brandName}</p>
           </div>
 
           {error && <div className="system-login__error"><i className="fas fa-exclamation-circle"></i><span>{error}</span></div>}
@@ -112,13 +122,13 @@ function Login() {
 
           <p className="system-login__employee-link">Nhân viên có thể đăng nhập tại đây hoặc <Link to="/employee-login">mở trang nhân viên</Link>.</p>
         </div>
-        <footer>© 2026 HR34 HR Management System</footer>
+        <footer>© {new Date().getFullYear()} {brandName}</footer>
       </section>
 
-      <aside className="system-login__branding" aria-label="HR34">
+      <aside className="system-login__branding" aria-label={brandName}>
         <div className="system-login__branding-content">
-          <div className="system-login__brand-logo"><img src="/hr-logo.svg" alt="HR34" /></div>
-          <h2>HR34</h2>
+          <div className="system-login__brand-logo"><CompanyLogo logoUrl={brandLogoUrl} alt="" /></div>
+          <h2>{brandName}</h2>
           <p className="system-login__slogan">QUẢN LÝ NHÂN SỰ</p>
           <div className="system-login__accent"></div>
           <p className="system-login__description">Hệ thống quản lý nhân sự tập trung, chuyên nghiệp và hiệu quả.</p>

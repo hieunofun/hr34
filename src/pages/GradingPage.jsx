@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { useCompany } from '../contexts/CompanyContext'
 import { supabase } from '../services/supabase'
 
 function GradingPage() {
     const { employeeId } = useParams()
     const [loading, setLoading] = useState(false)
     const { user: authUser } = useAuth()
-    const companyId = String(authUser?.company_id || authUser?.companyId || '')
+    const { companyId } = useCompany()
     const [user, setUser] = useState(null)
     const [userProfile, setUserProfile] = useState(null)
     const [month, setMonth] = useState(new Date().toISOString().slice(0, 7)) // YYYY-MM

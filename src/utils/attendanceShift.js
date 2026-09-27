@@ -23,6 +23,46 @@ export const SALE_ATTENDANCE_SHIFT = Object.freeze({
   end: '13:30'
 })
 
+export const DEFAULT_ATTENDANCE_POLICY = Object.freeze({
+  standardWorkMinutes: 480,
+  monthlyStandardWorkUnits: 26,
+  standardWorkUnit: 1,
+  maxWorkUnitPerDay: 1,
+  requiredPunchPairs: 1,
+  missingPunchPolicy: 'zero',
+  lateGraceMinutes: 0,
+  earlyLeaveGraceMinutes: 0,
+  latePenaltyThresholdMinutes: 30,
+  overtimeEnabled: true,
+  overtimeStart: 'shift_end',
+  overtimeMinMinutes: 0,
+  overtimeRoundingMinutes: 1,
+  overtimeRoundMode: 'floor',
+  workUnitCalculationMode: 'proportional',
+  allowOvernightShift: false,
+  importPriorityMode: 'raw_punch',
+  manualOverridePriority: 'highest',
+  saleLatestAutoCheckIn: '06:30',
+  policyVersion: 1
+})
+
+export const DEFAULT_ATTENDANCE_PENALTY_CATEGORIES = Object.freeze([
+  { key: 'late_under_30', label: 'Muộn/sớm <30p', amount: 50000 },
+  { key: 'late_over_30', label: 'Muộn/sớm ≥30p', amount: 100000 },
+  { key: 'missing_punch', label: 'Quên chấm', amount: 50000 },
+  { key: 'no_duty', label: 'Không trực nhật', amount: 50000 },
+  { key: 'emergency_leave', label: 'Nghỉ đột xuất', amount: 100000 },
+  { key: 'unapproved_absence', label: 'Nghỉ không phép', amount: 200000 },
+  { key: 'drunk', label: 'Say xỉn', amount: 200000 },
+  { key: 'other', label: 'Khác', amount: 0 }
+])
+
+const positiveNumber = (value, fallback) => Number.isFinite(Number(value)) && Number(value) > 0
+  ? Number(value) : fallback
+const nonnegativeNumber = (value, fallback) => Number.isFinite(Number(value)) && Number(value) >= 0
+  ? Number(value) : fallback
+const choice = (value, allowed, fallback) => allowed.includes(value) ? value : fallback
+
 export const ATTENDANCE_SHIFT_IDS = Object.freeze({
   ADMINISTRATIVE: 'administrative',
   SALE_MORNING: 'saleMorning'
@@ -119,15 +159,21 @@ const normalizeConfiguredShift = (id, value, fallback) => {
     name: source.name === undefined ? fallback.name : String(source.name).trim(),
     standardCheckIn: normalizeTime(source.standardCheckIn || source.start) || fallback.start,
     standardCheckOut: normalizeTime(source.standardCheckOut || source.end) || fallback.end,
-    splitShift: normalizeSplitShift(source.splitShift || source.splitSessions)
+    lunchStart: normalizeTime(source.lunchStart),
+    lunchEnd: normalizeTime(source.lunchEnd),
+    splitShift: normalizeSplitShift(source.splitShift || source.splitSessions),
+    unpaidBreakMinutes: nonnegativeNumber(source.unpaidBreakMinutes, fallback.unpaidBreakMinutes ?? 0),
+    standardWorkMinutes: positiveNumber(source.standardWorkMinutes, fallback.standardWorkMinutes ?? 0),
+    workUnit: positiveNumber(source.workUnit, DEFAULT_ATTENDANCE_POLICY.standardWorkUnit),
+    allowOvernightShift: source.allowOvernightShift === true
   }
 }
 
-export const normalizeAttendanceShiftSettings = (settings = {}) => {
+export const normalizeAttendancePolicy = (settings = {}) => {
   const source = settings && typeof settings === 'object' ? settings : {}
 
-  const storedShifts = source.shifts && typeof source.shifts === 'object'
-    ? source.shifts
+  const storedShifts = (source.shifts || source.shiftDefinitions) && typeof (source.shifts || source.shiftDefinitions) === 'object'
+    ? (source.shifts || source.shiftDefinitions)
     : {}
   const findStoredShift = id => Array.isArray(storedShifts)
     ? storedShifts.find(shift => shift?.id === id)
@@ -151,27 +197,40 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
     workEnd: candidateWorkEnd
   })
 
-  const workStart = validation.isValid ? candidateWorkStart : DEFAULT_ATTENDANCE_SETTINGS.workStart
-  const lunchStart = validation.isValid ? candidateLunchStart : DEFAULT_ATTENDANCE_SETTINGS.lunchStart
-  const lunchEnd = validation.isValid ? candidateLunchEnd : DEFAULT_ATTENDANCE_SETTINGS.lunchEnd
-  const workEnd = validation.isValid ? candidateWorkEnd : DEFAULT_ATTENDANCE_SETTINGS.workEnd
+  const overnightSchedule = source.allowOvernightShift === true &&
+    attendanceTimeToMinutes(candidateWorkEnd) < attendanceTimeToMinutes(candidateWorkStart)
+  const scheduleValid = validation.isValid || overnightSchedule
+  const workStart = scheduleValid ? candidateWorkStart : DEFAULT_ATTENDANCE_SETTINGS.workStart
+  const lunchStart = scheduleValid ? candidateLunchStart : DEFAULT_ATTENDANCE_SETTINGS.lunchStart
+  const lunchEnd = scheduleValid ? candidateLunchEnd : DEFAULT_ATTENDANCE_SETTINGS.lunchEnd
+  const workEnd = scheduleValid ? candidateWorkEnd : DEFAULT_ATTENDANCE_SETTINGS.workEnd
 
-  const startMins = attendanceTimeToMinutes(workStart) ?? 420
-  const lunchStartMins = attendanceTimeToMinutes(lunchStart) ?? 660
-  const lunchEndMins = attendanceTimeToMinutes(lunchEnd) ?? 780
-  const endMins = attendanceTimeToMinutes(workEnd) ?? 1020
+  const startMins = attendanceTimeToMinutes(workStart) ?? attendanceTimeToMinutes(DEFAULT_ATTENDANCE_SETTINGS.workStart)
+  const lunchStartMins = attendanceTimeToMinutes(lunchStart) ?? attendanceTimeToMinutes(DEFAULT_ATTENDANCE_SETTINGS.lunchStart)
+  const lunchEndMins = attendanceTimeToMinutes(lunchEnd) ?? attendanceTimeToMinutes(DEFAULT_ATTENDANCE_SETTINGS.lunchEnd)
+  const endMins = attendanceTimeToMinutes(workEnd) ?? attendanceTimeToMinutes(DEFAULT_ATTENDANCE_SETTINGS.workEnd)
 
-  const morningMinutes = Math.max(0, lunchStartMins - startMins)
-  const afternoonMinutes = Math.max(0, endMins - lunchEndMins)
-  const dynamicStandardMinutes = morningMinutes + afternoonMinutes
-  const standardWorkMinutes = dynamicStandardMinutes > 0 ? dynamicStandardMinutes : 480
+  const adjustedEnd = endMins < startMins ? endMins + 1440 : endMins
+  const adjustedLunchStart = lunchStartMins < startMins ? lunchStartMins + 1440 : lunchStartMins
+  const adjustedLunchEnd = lunchEndMins < startMins ? lunchEndMins + 1440 : lunchEndMins
+  const lunchDuration = adjustedLunchEnd - adjustedLunchStart
+  const configuredBreakMinutes = Number(source.unpaidBreakMinutes ?? source.breakMinutes ?? lunchDuration)
+  const unpaidBreakMinutes = Number.isFinite(configuredBreakMinutes) && configuredBreakMinutes >= 0
+    ? Math.round(configuredBreakMinutes)
+    : 0
+  const morningMinutes = Math.max(0, adjustedLunchStart - startMins)
+  const afternoonMinutes = Math.max(0, adjustedEnd - adjustedLunchEnd)
+  const scheduledMinutes = morningMinutes + afternoonMinutes
+  const dynamicStandardMinutes = Math.max(0, adjustedEnd - startMins - Math.max(lunchDuration, unpaidBreakMinutes))
+  const standardWorkMinutes = positiveNumber(source.standardWorkMinutes,
+    dynamicStandardMinutes > 0 ? dynamicStandardMinutes : DEFAULT_ATTENDANCE_POLICY.standardWorkMinutes)
 
-  const morningWorkdays = standardWorkMinutes > 0 ? morningMinutes / standardWorkMinutes : 0.5
-  const afternoonWorkdays = standardWorkMinutes > 0 ? afternoonMinutes / standardWorkMinutes : 0.5
+  const morningWorkdays = scheduledMinutes > 0 ? morningMinutes / scheduledMinutes : 0.5
+  const afternoonWorkdays = scheduledMinutes > 0 ? afternoonMinutes / scheduledMinutes : 0.5
 
   // Tận dụng splitShift: tạo cấu hình 2 buổi chuẩn (sáng + chiều) tách giờ nghỉ trưa
   const defaultAdministrativeSplitShift = {
-    enabled: true,
+    enabled: false,
     morning: {
       start: workStart,
       end: lunchStart,
@@ -184,11 +243,20 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
     }
   }
 
-  const legacyAdministrative = administrativeSource || {
+  const administrativeSplit = administrativeSource?.splitShift || administrativeSource?.splitSessions || defaultAdministrativeSplitShift
+  const legacyAdministrative = {
     name: 'Ca Hành chính',
     standardCheckIn: workStart,
     standardCheckOut: workEnd,
-    splitShift: defaultAdministrativeSplitShift
+    ...administrativeSource,
+    splitShift: {
+      ...administrativeSplit,
+      enabled: source.splitShiftEnabled ?? administrativeSplit.enabled,
+      morning: { ...administrativeSplit.morning,
+        workdays: source.morningWeight ?? administrativeSplit.morning?.workdays ?? morningWorkdays },
+      afternoon: { ...administrativeSplit.afternoon,
+        workdays: source.afternoonWeight ?? administrativeSplit.afternoon?.workdays ?? afternoonWorkdays }
+    }
   }
   const additionalShifts = Object.fromEntries(
     (Array.isArray(storedShifts)
@@ -202,10 +270,6 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
       })])
   )
 
-  const configuredBreakMinutes = Number(source.unpaidBreakMinutes ?? source.breakMinutes ?? 0)
-  const unpaidBreakMinutes = Number.isFinite(configuredBreakMinutes) && configuredBreakMinutes >= 0
-    ? Math.round(configuredBreakMinutes)
-    : 0
   const overtimeSource = source.overtime && typeof source.overtime === 'object'
     ? source.overtime
     : {}
@@ -221,6 +285,34 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
       .filter(item => /^\d{4}-\d{2}-\d{2}$/.test(item.date))
     : []
 
+  const shifts = {
+    [ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE]: normalizeConfiguredShift(
+      ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE,
+      { ...legacyAdministrative, standardWorkMinutes: source.standardWorkMinutes || legacyAdministrative.standardWorkMinutes,
+        unpaidBreakMinutes: source.unpaidBreakMinutes ?? legacyAdministrative.unpaidBreakMinutes },
+      { name: 'Ca Hành chính', start: workStart, end: workEnd,
+        unpaidBreakMinutes, standardWorkMinutes }
+    ),
+    [ATTENDANCE_SHIFT_IDS.SALE_MORNING]: normalizeConfiguredShift(
+      ATTENDANCE_SHIFT_IDS.SALE_MORNING,
+      findStoredShift(ATTENDANCE_SHIFT_IDS.SALE_MORNING),
+      { ...SALE_ATTENDANCE_SHIFT, unpaidBreakMinutes: 30, standardWorkMinutes: 540 }
+    ),
+    ...additionalShifts
+  }
+  const shiftDefinitions = Object.fromEntries(Object.entries(shifts).map(([id, shift]) => [id, {
+    ...shift,
+    start: shift.standardCheckIn,
+    end: shift.standardCheckOut
+  }]))
+  const penaltyRules = source.penaltyRules && typeof source.penaltyRules === 'object' ? source.penaltyRules : {}
+  const latePenaltyThresholdMinutes = positiveNumber(source.latePenaltyThresholdMinutes ?? penaltyRules.latePenaltyThresholdMinutes,
+    DEFAULT_ATTENDANCE_POLICY.latePenaltyThresholdMinutes)
+  const defaultPenaltyCategories = DEFAULT_ATTENDANCE_PENALTY_CATEGORIES.map(item => ({
+    ...item,
+    label: item.key === 'late_under_30' ? `Muộn/sớm <${latePenaltyThresholdMinutes}p`
+      : item.key === 'late_over_30' ? `Muộn/sớm ≥${latePenaltyThresholdMinutes}p` : item.label
+  }))
   return {
     timezone: source.timezone || 'Asia/Ho_Chi_Minh',
     workStart,
@@ -230,27 +322,141 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
     morningMinutes,
     afternoonMinutes,
     standardWorkMinutes,
+    monthlyStandardWorkUnits: positiveNumber(source.monthlyStandardWorkUnits,
+      DEFAULT_ATTENDANCE_POLICY.monthlyStandardWorkUnits),
     unpaidBreakMinutes,
-    overtime: {
-      autoCalculate: overtimeSource.autoCalculate !== false
+    overtime: { autoCalculate: overtimeSource.autoCalculate !== false },
+    standardWorkUnit: positiveNumber(source.standardWorkUnit, DEFAULT_ATTENDANCE_POLICY.standardWorkUnit),
+    maxWorkUnitPerDay: positiveNumber(source.maxWorkUnitPerDay, DEFAULT_ATTENDANCE_POLICY.maxWorkUnitPerDay),
+    requiredPunchPairs: Math.max(1, Math.floor(positiveNumber(source.requiredPunchPairs, DEFAULT_ATTENDANCE_POLICY.requiredPunchPairs))),
+    missingPunchPolicy: choice(source.missingPunchPolicy, ['zero', 'partial', 'manual_review', 'use_first_last'], DEFAULT_ATTENDANCE_POLICY.missingPunchPolicy),
+    lateGraceMinutes: nonnegativeNumber(source.lateGraceMinutes, 0),
+    earlyLeaveGraceMinutes: nonnegativeNumber(source.earlyLeaveGraceMinutes, 0),
+    latePenaltyThresholdMinutes,
+    overtimeEnabled: source.overtimeEnabled !== false && overtimeSource.autoCalculate !== false,
+    overtimeStart: source.overtimeStart || 'shift_end',
+    overtimeMinMinutes: nonnegativeNumber(source.overtimeMinMinutes, 0),
+    overtimeRoundingMinutes: positiveNumber(source.overtimeRoundingMinutes, 1),
+    overtimeRoundMode: choice(source.overtimeRoundMode, ['floor', 'ceil', 'nearest'], 'floor'),
+    workUnitCalculationMode: choice(source.workUnitCalculationMode, ['proportional', 'split_shift', 'fixed_shift', 'imported'],
+      shifts.administrative.splitShift.enabled ? 'split_shift' : 'proportional'),
+    splitShiftEnabled: source.splitShiftEnabled ?? shifts.administrative.splitShift.enabled,
+    morningWeight: nonnegativeNumber(source.morningWeight, morningWorkdays),
+    afternoonWeight: nonnegativeNumber(source.afternoonWeight, afternoonWorkdays),
+    allowOvernightShift: source.allowOvernightShift === true,
+    importPriorityMode: choice(source.importPriorityMode, ['raw_punch', 'imported_hours', 'imported_work_unit'], 'raw_punch'),
+    manualOverridePriority: choice(source.manualOverridePriority, ['none', 'allowed', 'highest'], 'highest'),
+    saleLatestAutoCheckIn: normalizeTime(source.saleLatestAutoCheckIn) || DEFAULT_ATTENDANCE_POLICY.saleLatestAutoCheckIn,
+    penaltyRules: {
+      latePenaltyThresholdMinutes,
+      categories: penaltyRules.categories || source.penaltyCategories || defaultPenaltyCategories,
+      emergencyLeaveFreeCount: nonnegativeNumber(penaltyRules.emergencyLeaveFreeCount, 2)
     },
+    policyVersion: Math.max(1, Math.floor(positiveNumber(source.policyVersion, 1))),
     holidays,
-    shifts: {
-      [ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE]: normalizeConfiguredShift(
-        ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE,
-        legacyAdministrative,
-        { name: 'Ca Hành chính', start: workStart, end: workEnd }
-      ),
-      [ATTENDANCE_SHIFT_IDS.SALE_MORNING]: normalizeConfiguredShift(
-        ATTENDANCE_SHIFT_IDS.SALE_MORNING,
-        findStoredShift(ATTENDANCE_SHIFT_IDS.SALE_MORNING),
-        SALE_ATTENDANCE_SHIFT
-      ),
-      ...additionalShifts
-    },
+    shifts,
+    shiftDefinitions,
     standardCheckIn: workStart,
     standardCheckOut: workEnd
   }
+}
+
+export const normalizeAttendanceShiftSettings = normalizeAttendancePolicy
+
+export const validateAttendancePolicy = (settings = {}) => {
+  const policy = normalizeAttendancePolicy(settings)
+  const fail = error => ({ isValid: false, error })
+  const time = value => attendanceTimeToMinutes(value)
+  for (const field of ['workStart', 'workEnd', 'lunchStart', 'lunchEnd']) {
+    if (time(settings[field] ?? policy[field]) === null) return fail(`Giờ ${field} không hợp lệ.`)
+  }
+  const start = time(settings.workStart ?? policy.workStart)
+  const end = time(settings.workEnd ?? policy.workEnd)
+  const lunchStart = time(settings.lunchStart ?? policy.lunchStart)
+  const lunchEnd = time(settings.lunchEnd ?? policy.lunchEnd)
+  const overnight = end <= start
+  if (overnight && !settings.allowOvernightShift) return fail('Ca qua đêm phải bật Cho phép ca qua đêm.')
+  const shiftEnd = overnight ? end + 1440 : end
+  const lunchFrom = overnight && lunchStart < start ? lunchStart + 1440 : lunchStart
+  const lunchTo = overnight && lunchEnd < start ? lunchEnd + 1440 : lunchEnd
+  if (!(start < lunchFrom && lunchFrom < lunchTo && lunchTo < shiftEnd)) {
+    return fail('Giờ nghỉ phải nằm trong ca và có thứ tự bắt đầu trước kết thúc.')
+  }
+  if (!(Number(settings.standardWorkMinutes ?? policy.standardWorkMinutes) > 0) ||
+    !(Number(settings.monthlyStandardWorkUnits ?? policy.monthlyStandardWorkUnits) > 0) ||
+    !(Number(settings.standardWorkUnit ?? policy.standardWorkUnit) > 0) ||
+    !(Number(settings.maxWorkUnitPerDay ?? policy.maxWorkUnitPerDay) > 0)) {
+    return fail('Chuẩn phút công, công chuẩn tháng, công chuẩn ngày và công tối đa phải lớn hơn 0.')
+  }
+  if (!Number.isInteger(Number(settings.requiredPunchPairs ?? policy.requiredPunchPairs)) || Number(settings.requiredPunchPairs ?? policy.requiredPunchPairs) < 1) {
+    return fail('Số cặp chấm công phải là số nguyên từ 1 trở lên.')
+  }
+  const breakValue = Number(settings.unpaidBreakMinutes ?? policy.unpaidBreakMinutes)
+  if (!Number.isFinite(breakValue) || breakValue < 0 || breakValue >= shiftEnd - start) {
+    return fail('Số phút nghỉ không tính công phải nhỏ hơn độ dài ca.')
+  }
+  const morningWeight = Number(settings.morningWeight ?? policy.morningWeight)
+  const afternoonWeight = Number(settings.afternoonWeight ?? policy.afternoonWeight)
+  if (!Number.isFinite(morningWeight) || !Number.isFinite(afternoonWeight) || morningWeight < 0 || afternoonWeight < 0 ||
+    morningWeight + afternoonWeight > Number(settings.maxWorkUnitPerDay ?? policy.maxWorkUnitPerDay) + 1e-9) {
+    return fail('Trọng số sáng/chiều không hợp lệ hoặc vượt số công tối đa mỗi ngày.')
+  }
+  if (settings.overtimeStart && settings.overtimeStart !== 'shift_end' && time(settings.overtimeStart) === null) return fail('Giờ bắt đầu tăng ca không hợp lệ.')
+  if (!Number.isFinite(Number(settings.overtimeMinMinutes ?? policy.overtimeMinMinutes)) ||
+    Number(settings.overtimeMinMinutes ?? policy.overtimeMinMinutes) < 0 ||
+    !(Number(settings.overtimeRoundingMinutes ?? policy.overtimeRoundingMinutes) > 0)) {
+    return fail('Thời gian tối thiểu hoặc bước làm tròn tăng ca không hợp lệ.')
+  }
+  const freeLeaveCount = Number(settings.penaltyRules?.emergencyLeaveFreeCount ?? policy.penaltyRules.emergencyLeaveFreeCount)
+  if (!Number.isInteger(freeLeaveCount) || freeLeaveCount < 0) {
+    return fail('Số lần nghỉ đột xuất miễn phạt phải là số nguyên từ 0 trở lên.')
+  }
+  const shifts = settings.shifts || settings.shiftDefinitions || policy.shifts
+  const definitions = Array.isArray(shifts) ? shifts : Object.values(shifts)
+  if ((settings.workUnitCalculationMode ?? policy.workUnitCalculationMode) === 'split_shift' &&
+    !Object.values(policy.shifts).some(shift => shift.splitShift?.enabled)) {
+    return fail('Chế độ chia buổi cần ít nhất một ca đã bật chia buổi.')
+  }
+  for (const shift of definitions) {
+    const shiftStart = time(shift.standardCheckIn || shift.start)
+    const shiftEndTime = time(shift.standardCheckOut || shift.end)
+    if (!String(shift.name || shift.id || '').trim() || shiftStart === null || shiftEndTime === null || shiftStart === shiftEndTime) {
+      return fail(`Ca ${shift.name || shift.id || 'mới'} cần tên và hai giờ vào/ra hợp lệ, khác nhau.`)
+    }
+    if (shiftEndTime < shiftStart && !(shift.allowOvernightShift || settings.allowOvernightShift)) {
+      return fail(`Ca ${shift.name || shift.id} qua đêm phải bật Cho phép ca qua đêm.`)
+    }
+    if (shift.standardWorkMinutes !== undefined && !(Number(shift.standardWorkMinutes) > 0)) return fail(`Chuẩn công của ca ${shift.name || shift.id} phải lớn hơn 0.`)
+    if (shift.workUnit !== undefined && !(Number(shift.workUnit) > 0)) return fail(`Công đủ ca ${shift.name || shift.id} phải lớn hơn 0.`)
+    if (shift.unpaidBreakMinutes !== undefined && (!Number.isFinite(Number(shift.unpaidBreakMinutes)) || Number(shift.unpaidBreakMinutes) < 0)) return fail(`Phút nghỉ của ca ${shift.name || shift.id} không hợp lệ.`)
+    const shiftDuration = (shiftEndTime < shiftStart ? shiftEndTime + 1440 : shiftEndTime) - shiftStart
+    if (Number(shift.unpaidBreakMinutes || 0) >= shiftDuration) return fail(`Phút nghỉ của ca ${shift.name || shift.id} phải nhỏ hơn độ dài ca.`)
+    if (shift.lunchStart || shift.lunchEnd) {
+      const lunchStartTime = time(shift.lunchStart)
+      const lunchEndTime = time(shift.lunchEnd)
+      const lunchFrom = lunchStartTime !== null && shiftEndTime < shiftStart && lunchStartTime < shiftStart
+        ? lunchStartTime + 1440 : lunchStartTime
+      const lunchTo = lunchEndTime !== null && shiftEndTime < shiftStart && lunchEndTime < shiftStart
+        ? lunchEndTime + 1440 : lunchEndTime
+      if (lunchFrom === null || lunchTo === null || lunchFrom < shiftStart || lunchTo > shiftStart + shiftDuration || lunchFrom >= lunchTo) {
+        return fail(`Giờ nghỉ của ca ${shift.name || shift.id} phải nằm đúng trong ca.`)
+      }
+    }
+    const split = shift.splitShift || shift.splitSessions
+    if (split?.enabled) {
+      if (shiftEndTime < shiftStart) return fail(`Ca ${shift.name || shift.id} qua đêm chưa hỗ trợ chia hai buổi; hãy tắt chia buổi.`)
+      const sessions = [split.morning, split.afternoon]
+      if (sessions.some(session => time(session?.start) === null || time(session?.end) === null || time(session.start) >= time(session.end) || Number(session.workdays) <= 0)) {
+        return fail(`Giờ hoặc trọng số chia buổi của ca ${shift.name || shift.id} không hợp lệ.`)
+      }
+      if (time(sessions[0].start) < shiftStart || time(sessions[1].end) > shiftEndTime ||
+        time(sessions[0].end) > time(sessions[1].start) ||
+        Number(sessions[0].workdays) + Number(sessions[1].workdays) > Number(settings.maxWorkUnitPerDay ?? policy.maxWorkUnitPerDay) + 1e-9) {
+        return fail(`Hai buổi của ca ${shift.name || shift.id} chồng lấn hoặc vượt công tối đa.`)
+      }
+    }
+  }
+  return { isValid: true, error: '' }
 }
 
 export const getAttendanceShiftOptions = settings =>
@@ -259,16 +465,8 @@ export const getAttendanceShiftOptions = settings =>
 export const buildAttendanceShiftSettingsPayload = settings => {
   const normalized = normalizeAttendanceShiftSettings(settings)
   return {
-    timezone: normalized.timezone,
-    workStart: normalized.workStart,
-    lunchStart: normalized.lunchStart,
-    lunchEnd: normalized.lunchEnd,
-    workEnd: normalized.workEnd,
-    standardWorkMinutes: normalized.standardWorkMinutes,
-    unpaidBreakMinutes: normalized.unpaidBreakMinutes,
-    overtime: normalized.overtime,
-    holidays: normalized.holidays,
-    shifts: normalized.shifts,
+    ...normalized,
+    penaltyCategories: normalized.penaltyRules.categories,
     standardCheckIn: normalized.workStart,
     standardCheckOut: normalized.workEnd
   }
@@ -313,6 +511,14 @@ const configuredShiftFromName = (value, settings) => {
   return null
 }
 
+const exactShiftFromConfiguration = (value, settings) => {
+  const name = normalizeString(value)
+  if (!name) return null
+  const match = Object.values(normalizeAttendanceShiftSettings(settings).shifts).find(shift =>
+    normalizeString(shift.id) === name || normalizeString(shift.name) === name)
+  return match ? shiftFromConfiguration(match.id, settings) : null
+}
+
 const attachConfiguredSplitShift = (shift, sourceName, settings) => {
   const namedShift = configuredShiftFromName(sourceName, settings)
   const matchedShift = namedShift || Object.values(
@@ -344,7 +550,7 @@ const employeeShiftFields = employee => [
   employee?.tenCa
 ]
 
-const employeeIsSale = (employee, log) => {
+const employeeIsSale = (employee, log, settings) => {
   const position = normalizeString(
     employee?.vi_tri || employee?.position || log?.position || log?.chucVu || ''
   )
@@ -376,7 +582,7 @@ const employeeIsSale = (employee, log) => {
   const checkIn = firstValue(log?.vao, log?.checkIn)
   if (checkIn) {
     const mins = attendanceTimeToMinutes(checkIn)
-    if (mins !== null && mins >= 6 * 60 + 30) {
+    if (mins !== null && mins >= attendanceTimeToMinutes(normalizeAttendancePolicy(settings).saleLatestAutoCheckIn)) {
       return false
     }
   }
@@ -385,12 +591,18 @@ const employeeIsSale = (employee, log) => {
 }
 
 export const resolveAttendanceShift = (employee = {}, log = {}, settings = {}) => {
+  const logShiftId = firstValue(log.shiftId, log.shift_id)
+  const explicitLogShift = exactShiftFromConfiguration(logShiftId, settings)
+  if (explicitLogShift) return explicitLogShift
   // File DEOCA chỉ rõ Ca 1/Ca 2 ở cột Bộ phận; ca trên từng dòng có ưu tiên
   // hơn ca mặc định lưu trong hồ sơ nhân viên.
   if (log.importFormat === 'deoca-punch' && log.shiftName) {
     const sourceShift = configuredShiftFromName(log.shiftName, settings)
     if (sourceShift) return sourceShift
   }
+  const employeeShiftId = firstValue(employee.shiftId, employee.shift_id)
+  const explicitEmployeeShift = exactShiftFromConfiguration(employeeShiftId, settings)
+  if (explicitEmployeeShift) return explicitEmployeeShift
   const employeeStart = normalizeTime(firstValue(
     employee.standardCheckIn,
     employee.shiftStart,
@@ -464,9 +676,17 @@ export const resolveAttendanceShift = (employee = {}, log = {}, settings = {}) =
     settings
   )
 
-  // Dữ liệu cũ thường gán "Ca full/Ca ngày" cho mọi người; bộ phận Sale vẫn phải
-  // dùng ca Sale. Tên ca Sale rõ ràng trong hồ sơ hoặc log luôn được nhận diện.
-  if (employeeIsSale(employee, log)) {
+  // Tên ca đã khai báo trong cấu hình là lựa chọn tường minh. Chỉ dùng
+  // suy luận từ vai trò khi hồ sơ còn ghi alias chung như "Ca ngày".
+  const exactLogShift = exactShiftFromConfiguration(firstValue(log.shiftName, log.tenCa), settings)
+  if (exactLogShift) return exactLogShift
+  const exactEmployeeShift = exactShiftFromConfiguration(firstValue(...employeeShiftFields(employee)), settings)
+  if (exactEmployeeShift) return exactEmployeeShift
+
+  // Legacy fallback (deprecated): dữ liệu cũ thường gán "Ca full/Ca ngày"
+  // cho mọi người. Chỉ suy luận Sale/Trang sau khi đã thử shift_id, tên ca
+  // khớp cấu hình và giờ ca được gán. Hồ sơ mới nên gán ca rõ ràng.
+  if (employeeIsSale(employee, log, settings)) {
     return configuredShiftFromName('Ca Sáng Sale', settings) || SALE_ATTENDANCE_SHIFT
   }
   if (employeeConfiguredShift) return employeeConfiguredShift
@@ -523,6 +743,7 @@ export const calculateAttendanceTiming = ({
   const checkOutMinutes = attendanceTimeToMinutes(actualCheckOut)
   const shiftStartMinutes = attendanceTimeToMinutes(shift.start)
   const shiftEndMinutes = attendanceTimeToMinutes(shift.end)
+  const policy = normalizeAttendancePolicy(attendanceSettings)
 
   // Ca đêm có giờ kết thúc nhỏ hơn giờ bắt đầu. Quy đổi mốc kết thúc và
   // giờ ra sang ngày kế tiếp trước khi tính về sớm để không sinh số âm.
@@ -537,6 +758,10 @@ export const calculateAttendanceTiming = ({
     overnightShift && checkOutMinutes !== null && checkOutMinutes < shiftStartMinutes
       ? checkOutMinutes + 24 * 60
       : checkOutMinutes
+  const adjustedCheckInMinutes =
+    overnightShift && checkInMinutes !== null && checkInMinutes < shiftStartMinutes
+      ? checkInMinutes + 24 * 60
+      : checkInMinutes
 
   let effectiveStartMinutes = shiftStartMinutes
   let effectiveEndMinutes = adjustedShiftEndMinutes
@@ -578,12 +803,14 @@ export const calculateAttendanceTiming = ({
     shift,
     hasCheckIn: checkInMinutes !== null,
     hasCheckOut: checkOutMinutes !== null,
-    lateMinutes: checkInMinutes === null
+    lateMinutes: adjustedCheckInMinutes === null
       ? null
-      : Math.max(0, checkInMinutes - effectiveStartMinutes),
+      : Math.max(0, adjustedCheckInMinutes - effectiveStartMinutes) <= policy.lateGraceMinutes
+        ? 0 : Math.max(0, adjustedCheckInMinutes - effectiveStartMinutes),
     earlyMinutes: adjustedCheckOutMinutes === null
       ? null
-      : Math.max(0, effectiveEndMinutes - adjustedCheckOutMinutes)
+      : Math.max(0, effectiveEndMinutes - adjustedCheckOutMinutes) <= policy.earlyLeaveGraceMinutes
+        ? 0 : Math.max(0, effectiveEndMinutes - adjustedCheckOutMinutes)
   }
 }
 

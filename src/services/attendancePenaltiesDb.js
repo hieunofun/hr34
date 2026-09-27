@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { requireTenantCompanyId } from './tenantSession'
 
 const isUuid = value =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -47,9 +48,11 @@ const mapRowToDb = (row, month) => {
 }
 
 export const listPenaltyMonths = async () => {
+  const companyId = requireTenantCompanyId()
   const { data, error } = await supabase
     .from('attendance_penalties')
     .select('month')
+    .eq('company_id', companyId)
     .order('month', { ascending: false })
     .limit(2000)
 
@@ -58,9 +61,11 @@ export const listPenaltyMonths = async () => {
 }
 
 export const listPenaltyEmployeesSlim = async () => {
+  const companyId = requireTenantCompanyId()
   const { data, error } = await supabase
     .from('users')
     .select('id, name, employee_id, username')
+    .eq('company_id', companyId)
     .order('name', { ascending: true })
 
   if (error) throw error
@@ -72,12 +77,14 @@ export const listPenaltyEmployeesSlim = async () => {
 }
 
 export const getPenaltiesByMonth = async month => {
+  const companyId = requireTenantCompanyId()
   const period = String(month || '').trim()
   if (!/^\d{4}-\d{2}$/.test(period)) return []
 
   const { data, error } = await supabase
     .from('attendance_penalties')
     .select('*')
+    .eq('company_id', companyId)
     .eq('month', period)
     .order('penalty_date', { ascending: true })
     .order('employee_name', { ascending: true })
@@ -87,6 +94,7 @@ export const getPenaltiesByMonth = async month => {
 }
 
 export const savePenaltiesByMonth = async (month, rows = []) => {
+  const companyId = requireTenantCompanyId()
   const period = String(month || '').trim()
   if (!/^\d{4}-\d{2}$/.test(period)) {
     throw new Error('Tháng không hợp lệ')
@@ -95,10 +103,11 @@ export const savePenaltiesByMonth = async (month, rows = []) => {
   const { data: existing, error: existingError } = await supabase
     .from('attendance_penalties')
     .select('id')
+    .eq('company_id', companyId)
     .eq('month', period)
   if (existingError) throw existingError
 
-  const nextRows = (rows || []).map(row => mapRowToDb(row, period))
+  const nextRows = (rows || []).map(row => ({ ...mapRowToDb(row, period), company_id: companyId }))
   const keepIds = new Set(nextRows.map(row => row.id).filter(Boolean))
   const deleteIds = (existing || [])
     .map(row => row.id)
@@ -108,6 +117,7 @@ export const savePenaltiesByMonth = async (month, rows = []) => {
     const { error: deleteError } = await supabase
       .from('attendance_penalties')
       .delete()
+      .eq('company_id', companyId)
       .in('id', deleteIds)
     if (deleteError) throw deleteError
   }
@@ -157,6 +167,7 @@ export const savePenaltiesByMonth = async (month, rows = []) => {
 
 /** Migrate 1 tháng từ hr_records JSON (nếu còn) sang bảng attendance_penalties. */
 export const migrateLegacyPenaltyMonth = async month => {
+  const companyId = requireTenantCompanyId()
   const period = String(month || '').trim()
   if (!/^\d{4}-\d{2}$/.test(period)) return null
 
@@ -166,6 +177,7 @@ export const migrateLegacyPenaltyMonth = async month => {
   const { data, error } = await supabase
     .from('hr_records')
     .select('data')
+    .eq('company_id', companyId)
     .eq('id', `attendanceMonthPenalties::${period}`)
     .maybeSingle()
   if (error) throw error

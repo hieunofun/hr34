@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { getCompanyIdForUser } from '../utils/companyContext'
+import { useCompany } from '../contexts/CompanyContext'
 import { supabase } from '../services/supabase'
 import { fbGet, fbUpdate, fbGetAttendanceByEmployee } from '../services/firebase'
 import { uploadToCloudinary, getCloudinaryConfig, saveCloudinaryConfig } from '../utils/cloudinary'
 import {
   applyCalculatedAttendanceTiming,
   ATTENDANCE_SHIFT_IDS,
+  attendanceTimeToMinutes,
   buildAttendanceShiftSettingsPayload,
+  calculateAttendanceTiming,
   getAttendanceShiftOptions,
   normalizeAttendanceShiftSettings,
   resolveAttendanceShift
@@ -54,13 +56,14 @@ const displayDate = value => {
 
 function OnlineAttendance() {
   const { user } = useAuth()
-  const companyId = getCompanyIdForUser(user)
+  const { companyId } = useCompany()
   const isAdminOrManager = user?.role === 'admin' || user?.role === 'hr' || user?.role === 'manager'
   const [today, setToday] = useState(null)
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [settingsError, setSettingsError] = useState('')
 
   // 1. Đồng hồ thời gian thực
   const [currentTime, setCurrentTime] = useState(new Date())
@@ -145,13 +148,14 @@ function OnlineAttendance() {
         const normalized = normalizeAttendanceShiftSettings(settings)
         setAttendanceSettings(normalized)
         setShiftDrafts(normalized)
+        setSettingsError('')
       })
-      .catch(() => {})
+      .catch(() => setSettingsError('Không tải được chính sách chấm công của công ty. Giờ ca hiển thị có thể là giá trị mặc định.'))
 
     const { cloudName, uploadPreset } = getCloudinaryConfig()
     setCloudNameInput(cloudName)
     setCloudPresetInput(uploadPreset)
-  }, [])
+  }, [companyId])
 
   // Hàm lấy vị trí GPS
   const getCurrentLocation = useCallback(() => {
@@ -262,46 +266,47 @@ function OnlineAttendance() {
 
   // Tính số phút đi muộn / về sớm thời gian thực
   const calcTimingStatus = () => {
-    const [stdInHour, stdInMin] = (standardIn || '08:30').split(':').map(Number)
-    const [stdOutHour, stdOutMin] = (standardOut || '17:30').split(':').map(Number)
+    const stdInMinutes = attendanceTimeToMinutes(standardIn)
+    const stdOutMinutes = attendanceTimeToMinutes(standardOut)
+    const timing = calculateAttendanceTiming({ employee: user, log: record || {}, attendanceSettings })
 
     // Nếu đã check-in
     let checkInStatus = null
     if (checkedIn) {
-      const vaoStr = record?.vao || ''
-      const [vH, vM] = vaoStr.split(':').map(Number)
-      if (!Number.isNaN(vH) && !Number.isNaN(vM)) {
-        const diffMinutes = (vH * 60 + vM) - (stdInHour * 60 + stdInMin)
-        if (diffMinutes > 0) {
-          checkInStatus = { isLate: true, text: `Đi muộn ${diffMinutes} phút`, class: 'badge-danger' }
+      if (timing.hasCheckIn) {
+        if (timing.lateMinutes > 0) {
+          checkInStatus = { isLate: true, text: `Đi muộn ${timing.lateMinutes} phút`, class: 'badge-danger' }
         } else {
-          checkInStatus = { isLate: false, text: diffMinutes === 0 ? 'Đúng giờ' : `Đúng giờ (Sớm ${Math.abs(diffMinutes)}p)`, class: 'badge-success' }
+          const actualInMinutes = attendanceTimeToMinutes(record?.vao || record?.checkIn)
+          const earlyArrival = stdInMinutes === null || actualInMinutes === null
+            ? 0 : Math.max(0, stdInMinutes - actualInMinutes)
+          checkInStatus = { isLate: false, text: earlyArrival ? `Đúng giờ (Sớm ${earlyArrival}p)` : 'Đúng giờ', class: 'badge-success' }
         }
       }
     } else {
       // Chưa check-in -> so sánh thời gian hiện tại
       const nowMinutes = currentTime.getHours() * 60 + currentTime.getMinutes()
-      const stdInMinutes = stdInHour * 60 + stdInMin
-      if (nowMinutes > stdInMinutes) {
-        checkInStatus = { isLate: true, text: `Muộn ${nowMinutes - stdInMinutes}p nếu check-in lúc này`, class: 'badge-warning' }
-      } else {
-        checkInStatus = { isLate: false, text: 'Check-in đúng giờ', class: 'badge-success' }
+      if (stdInMinutes !== null) {
+        const potentialLateMinutes = Math.max(0, nowMinutes - stdInMinutes)
+        if (potentialLateMinutes > attendanceSettings.lateGraceMinutes) {
+          checkInStatus = { isLate: true, text: `Muộn ${potentialLateMinutes}p nếu check-in lúc này`, class: 'badge-warning' }
+        } else {
+          checkInStatus = { isLate: false, text: 'Check-in đúng giờ', class: 'badge-success' }
+        }
       }
     }
 
     // Check-out status
     let checkOutStatus = null
     if (checkedOut) {
-      const raStr = record?.ra || ''
-      const [rH, rM] = raStr.split(':').map(Number)
-      if (!Number.isNaN(rH) && !Number.isNaN(rM)) {
-        const diffMinutes = (rH * 60 + rM) - (stdOutHour * 60 + stdOutMin)
-        if (diffMinutes < 0) {
-          checkOutStatus = { isEarly: true, text: `Về sớm ${Math.abs(diffMinutes)} phút`, class: 'badge-warning' }
-        } else if (diffMinutes > 0) {
-          checkOutStatus = { isEarly: false, text: `Đúng giờ (Tăng ca ${diffMinutes}p)`, class: 'badge-success' }
+      if (timing.hasCheckOut) {
+        if (timing.earlyMinutes > 0) {
+          checkOutStatus = { isEarly: true, text: `Về sớm ${timing.earlyMinutes} phút`, class: 'badge-warning' }
         } else {
-          checkOutStatus = { isEarly: false, text: 'Đúng giờ', class: 'badge-success' }
+          const actualOutMinutes = attendanceTimeToMinutes(record?.ra || record?.checkOut)
+          const afterShift = stdOutMinutes === null || actualOutMinutes === null
+            ? 0 : Math.max(0, actualOutMinutes - stdOutMinutes)
+          checkOutStatus = { isEarly: false, text: afterShift ? `Đúng giờ (Sau ca ${afterShift}p)` : 'Đúng giờ', class: 'badge-success' }
         }
       }
     }
@@ -501,6 +506,7 @@ function OnlineAttendance() {
       </div>
 
       {/* Thông báo thông điệp */}
+      {settingsError && <div className="oa-alert oa-alert-danger">{settingsError}</div>}
       {error && <div className="oa-alert oa-alert-danger">{error}</div>}
       {notice && <div className="oa-alert oa-alert-success">{notice}</div>}
 

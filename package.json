@@ -1,11 +1,12 @@
 {
-  "name": "hr-company-34",
+  "name": "hr-shared",
   "version": "1.0.0",
-  "description": "Hệ thống Quản lý Nhân sự & Chấm công - Company 34",
+  "description": "Hệ thống quản lý nhân sự dùng chung cho nhiều công ty",
   "type": "module",
   "private": true,
   "scripts": {
     "dev": "vite",
+    "test": "node --test",
     "build": "vite build",
     "preview": "vite preview"
   },

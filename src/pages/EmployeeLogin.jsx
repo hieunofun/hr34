@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { useCompany } from '../contexts/CompanyContext'
+import CompanyLogo from '../components/CompanyLogo'
+import { companyDisplayName, companyLogoSource } from '../utils/companyBrand'
 import './EmployeeLogin.css'
 
 function EmployeeLogin() {
@@ -9,7 +12,15 @@ function EmployeeLogin() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const { login, logout } = useAuth()
+  const { companyName, logoUrl } = useCompany()
+  const brandName = companyDisplayName(companyName)
   const navigate = useNavigate()
+
+  useEffect(() => {
+    document.title = `${brandName} · HR`
+    const icon = document.querySelector('link[rel="icon"]')
+    if (icon) icon.href = companyLogoSource(logoUrl)
+  }, [brandName, logoUrl])
 
   const handleSubmit = async (event) => {
     event.preventDefault()
@@ -34,9 +45,9 @@ function EmployeeLogin() {
   return (
     <main className="employee-login">
       <section className="employee-login__card">
-        <img src="/hr-logo.svg" alt="HR34" />
+        <CompanyLogo logoUrl={logoUrl} alt="" />
         <h1>Đăng nhập nhân viên</h1>
-        <p>Đăng nhập để xem Bảng công của bạn</p>
+        <p>{brandName} · Đăng nhập để xem Bảng công của bạn</p>
         {error && <div className="employee-login__error">{error}</div>}
         <form onSubmit={handleSubmit}>
           <label><span>Email nhân viên</span><input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="email@congty.vn" autoComplete="username" required /></label>

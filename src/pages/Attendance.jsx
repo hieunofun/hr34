@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useAuth } from '../contexts/AuthContext'
-import { getCompanyIdForUser } from '../utils/companyContext'
 import AttendanceImportModal from '../components/AttendanceImportModal'
 import AttendanceModal, { dayOfWeekFromDate, formatTimeHM } from '../components/AttendanceModal'
 import AttendanceSettingsModal from '../components/AttendanceSettingsModal'
@@ -30,6 +28,7 @@ import {
 import { TAX_CONFIG } from '../utils/constants'
 import { calculateProgressiveTax, formatMoney, normalizeString } from '../utils/helpers'
 import { downloadAttendanceFromGoldenTemplate } from '../utils/attendanceExcel'
+import { prorateMonthlySalary } from '../utils/attendanceCalculations'
 import { normalizeAttendanceShiftSettings } from '../utils/attendanceShift'
 
 let XLSX = null
@@ -51,7 +50,6 @@ const buildAttendanceEmployeeFilterKey = (name, code) => {
 }
 
 const DAY_LABELS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']
-const STANDARD_WORKDAYS = 26
 
 const currentMonthValue = () => new Date().toISOString().slice(0, 7)
 
@@ -374,11 +372,14 @@ export const appendAttendanceSummarySheet = (
   workbook,
   rows,
   month,
-  optionRows = rows
+  optionRows = rows,
+  attendanceSettings = {}
 ) => {
   const [year, monthNumber] = month.split('-').map(Number)
   const daysInMonth = new Date(year, monthNumber, 0).getDate()
   const dayStartColumn = 27
+  const reportPolicy = normalizeAttendanceShiftSettings(attendanceSettings)
+  const lateThreshold = reportPolicy.latePenaltyThresholdMinutes
   const staticHeaders = [
     'STT',
     'Họ tên',
@@ -386,8 +387,8 @@ export const appendAttendanceSummarySheet = (
     'Ca làm',
     'Loại HĐ',
     'Trạng thái',
-    "Tổng số lần đi muộn <30'",
-    "Tổng số lần đi muộn ≥30'",
+    `Tổng số lần đi muộn <${lateThreshold}'`,
+    `Tổng số lần đi muộn ≥${lateThreshold}'`,
     'Phạt đi muộn',
     'Tổng số lần về sớm',
     'Phạt về sớm',
@@ -439,7 +440,7 @@ export const appendAttendanceSummarySheet = (
       0,
       0,
       0,
-      STANDARD_WORKDAYS,
+      reportPolicy.monthlyStandardWorkUnits,
       row.overtimeHours,
       row.probationWorkdays,
       row.officialWorkdays,
@@ -1581,6 +1582,7 @@ function Attendance() {
       await downloadAttendanceFromGoldenTemplate({
         rows,
         month: filterAttendanceMonth,
+        attendanceSettings,
         fileName: `BANG_CONG_${filterAttendanceMonth}.xlsx`
       })
     } catch (error) {
@@ -1606,7 +1608,8 @@ function Attendance() {
       workbook,
       rows,
       filterAttendanceMonth,
-      rows
+      rows,
+      attendanceSettings
     )
     try {
       await downloadAttendanceWorkbook(
@@ -1661,7 +1664,7 @@ function Attendance() {
           congThucTe: workdays,
           // Recalculate salary based on new workdays?
           // If we update workdays, we should probably update "luongNgayCong" too if "luong3P" exists.
-          // Formula: luongNgayCong = (luong3P / 26) * workdays
+          // Lấy công chuẩn tháng từ chính sách công ty; không đổi công thức công ngày.
           // But we don't have all data here easily unless we read deep.
           // For now, let's just update `congThucTe` and `luongNgayCong`.
           // We need to fetch `luong3P` from somewhere. 
@@ -1673,7 +1676,7 @@ function Attendance() {
         if (existingPayroll) {
           // Update
           const l3p = existingPayroll.luong3P || 0
-          payload.luongNgayCong = (l3p / 26) * workdays
+          payload.luongNgayCong = prorateMonthlySalary(l3p, workdays, attendanceSettings)
 
           await fbUpdate(`hr/payrolls/${existingPayroll.id}`, payload)
         } else {

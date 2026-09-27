@@ -5,27 +5,31 @@
 
 export const getCloudinaryConfig = () => {
   const cloudName =
+    localStorage.getItem('hr_cloudinary_cloud_name') ||
+    // Read older browser settings so existing users keep their photo upload setup.
     localStorage.getItem('speego_cloudinary_cloud_name') ||
     import.meta.env.VITE_CLOUDINARY_CLOUD_NAME ||
-    'ksny3wwy'
+    ''
 
   const uploadPreset =
+    localStorage.getItem('hr_cloudinary_upload_preset') ||
     localStorage.getItem('speego_cloudinary_upload_preset') ||
     import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET ||
-    'nr5kwa0r'
+    ''
 
   return { cloudName, uploadPreset }
 }
 
 export const saveCloudinaryConfig = (cloudName, uploadPreset) => {
-  if (cloudName) localStorage.setItem('speego_cloudinary_cloud_name', cloudName.trim())
-  if (uploadPreset) localStorage.setItem('speego_cloudinary_upload_preset', uploadPreset.trim())
+  if (cloudName) localStorage.setItem('hr_cloudinary_cloud_name', cloudName.trim())
+  if (uploadPreset) localStorage.setItem('hr_cloudinary_upload_preset', uploadPreset.trim())
 }
 
 export const uploadToCloudinary = async (imageFileOrBase64) => {
   const { cloudName, uploadPreset } = getCloudinaryConfig()
 
   try {
+    if (!cloudName || !uploadPreset) throw new Error('Chưa cấu hình Cloudinary.')
     const formData = new FormData()
     formData.append('file', imageFileOrBase64)
     formData.append('upload_preset', uploadPreset)

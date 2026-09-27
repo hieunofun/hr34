@@ -1,4 +1,5 @@
-import { supabase, DEFAULT_COMPANY_ID } from './supabase'
+import { supabase } from './supabase'
+import { requireTenantCompanyId } from './tenantSession'
 import { mapAppToUser, mapUserToApp } from '../utils/helpers'
 
 /**
@@ -11,11 +12,7 @@ const genId = () =>
   `-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 11)}`
 
 const rowId = (collection, id) => `${collection}::${id}`
-const requireCompanyId = companyId => {
-  const value = String(companyId || '').trim()
-  if (!value) throw new Error('Thiếu company_id khi truy cập dữ liệu nhân sự.')
-  return value
-}
+const requireCompanyId = requireTenantCompanyId
 const scopedRowPrefix = (collection, companyId) =>
   `${requireCompanyId(companyId)}::${collection}::`
 const scopedRowId = (collection, id, companyId) =>
@@ -264,9 +261,9 @@ async function listEmployeesAsFirebaseMap(companyId) {
   return out
 }
 
-export const fbGetEmployeesDirectory = (companyId = DEFAULT_COMPANY_ID) => listEmployeesAsFirebaseMap(companyId)
+export const fbGetEmployeesDirectory = companyId => listEmployeesAsFirebaseMap(requireCompanyId(companyId))
 
-async function pushEmployee(payload, companyId = DEFAULT_COMPANY_ID) {
+async function pushEmployee(payload, companyId) {
   const tenantId = requireCompanyId(companyId)
   const id = crypto.randomUUID()
   const dbPayload = mapAppToUser(payload || {}) || {}
@@ -307,7 +304,8 @@ async function getHrRoot(companyId) {
   return Object.keys(root).length ? root : null
 }
 
-export const fbGet = async (path, companyId = DEFAULT_COMPANY_ID) => {
+export const fbGet = async (path, companyId) => {
+  companyId = requireCompanyId(companyId)
   const parsed = parsePath(path)
 
   if (parsed.kind === 'employees') {
@@ -352,7 +350,8 @@ export const fbGet = async (path, companyId = DEFAULT_COMPANY_ID) => {
   return null
 }
 
-export const fbGetAttendanceByEmployee = async (employeeId, companyId = DEFAULT_COMPANY_ID) => {
+export const fbGetAttendanceByEmployee = async (employeeId, companyId) => {
+  companyId = requireCompanyId(companyId)
   const ownerId = String(employeeId || '').trim()
   if (!ownerId) return null
   const tenantId = requireCompanyId(companyId)
@@ -383,7 +382,8 @@ export const fbGetAttendanceByEmployee = async (employeeId, companyId = DEFAULT_
  * Ưu tiên log Excel/online trong hr_records; dùng cham_cong làm fallback
  * cho dữ liệu cũ chưa có log mềm.
  */
-export const fbGetAttendanceLogsByMonth = async (month, companyId = DEFAULT_COMPANY_ID) => {
+export const fbGetAttendanceLogsByMonth = async (month, companyId) => {
+  companyId = requireCompanyId(companyId)
   const period = String(month || '').trim()
   if (!/^\d{4}-\d{2}$/.test(period)) return null
   const tenantId = requireCompanyId(companyId)
@@ -491,7 +491,8 @@ export const fbGetAttendanceLogsByMonth = async (month, companyId = DEFAULT_COMP
 }
 
 /** List logical ids in a collection without loading full JSON payloads. */
-export const fbListCollectionIds = async (collection, companyId = DEFAULT_COMPANY_ID) => {
+export const fbListCollectionIds = async (collection, companyId) => {
+  companyId = requireCompanyId(companyId)
   const name = String(collection || '').trim()
   if (!name) return []
   const rows = await readCollectionRows(name, companyId)
@@ -500,7 +501,8 @@ export const fbListCollectionIds = async (collection, companyId = DEFAULT_COMPAN
   )))
 }
 
-export const fbSet = async (path, data, companyId = DEFAULT_COMPANY_ID) => {
+export const fbSet = async (path, data, companyId) => {
+  companyId = requireCompanyId(companyId)
   const parsed = parsePath(path)
 
   if (parsed.kind === 'record') {
@@ -533,7 +535,8 @@ export const fbSet = async (path, data, companyId = DEFAULT_COMPANY_ID) => {
   }
 }
 
-export const fbPush = async (path, data, companyId = DEFAULT_COMPANY_ID) => {
+export const fbPush = async (path, data, companyId) => {
+  companyId = requireCompanyId(companyId)
   const parsed = parsePath(path)
 
   if (parsed.kind === 'employees') {
@@ -552,7 +555,8 @@ export const fbPush = async (path, data, companyId = DEFAULT_COMPANY_ID) => {
   return { name: id }
 }
 
-export const fbDelete = async (path, companyId = DEFAULT_COMPANY_ID) => {
+export const fbDelete = async (path, companyId) => {
+  companyId = requireCompanyId(companyId)
   const parsed = parsePath(path)
 
   if (parsed.kind === 'employees' && parsed.id) {
@@ -572,7 +576,8 @@ export const fbDelete = async (path, companyId = DEFAULT_COMPANY_ID) => {
   }
 }
 
-export const fbUpdate = async (path, data, companyId = DEFAULT_COMPANY_ID) => {
+export const fbUpdate = async (path, data, companyId) => {
+  companyId = requireCompanyId(companyId)
   const parsed = parsePath(path)
 
   if (parsed.kind === 'employees' && parsed.id) {

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../services/supabase'
+import { requireTenantCompanyId } from '../services/tenantSession'
 
 function StatusHistoryView({ companyId, employees, onDataChange }) {
+    companyId = requireTenantCompanyId(companyId)
     const [logs, setLogs] = useState([])
     const [loading, setLoading] = useState(true)
     const [fromDate, setFromDate] = useState('')

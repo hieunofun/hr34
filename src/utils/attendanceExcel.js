@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs'
+import { normalizeAttendancePolicy } from './attendanceShift.js'
 
 const TEMPLATE_URL = '/templates/attendance-report-template.xlsx'
 const SHEET_NAME = 'THÁNG 7'
@@ -125,8 +126,9 @@ const setFormula = (cell, formula, result = 0) => {
   cell.value = { formula, result }
 }
 
-const populateEmployee = (worksheet, rowNumber, row, index, month, daysInMonth) => {
+const populateEmployee = (worksheet, rowNumber, row, index, month, daysInMonth, policy) => {
   clearEmployeeRow(worksheet, rowNumber)
+  const penaltyAmount = key => Number(policy.penaltyRules.categories.find(item => item.key === key)?.amount || 0)
   const note = row.lateCount
     ? `${row.lateCount} lần (${row.lateMinutes || 0}p)`
     : ''
@@ -145,17 +147,17 @@ const populateEmployee = (worksheet, rowNumber, row, index, month, daysInMonth) 
   worksheet.getCell(rowNumber, 10).value = normalizeDateText(row.lastWorkingDate)
   worksheet.getCell(rowNumber, 11).value = note
   worksheet.getCell(rowNumber, 12).value = Number(row.lateUnder30Count || 0) + earlyUnder30Count
-  setFormula(worksheet.getCell(rowNumber, 13), `50000*IF(L${rowNumber}>=1,L${rowNumber})`)
+  setFormula(worksheet.getCell(rowNumber, 13), `${penaltyAmount('late_under_30')}*L${rowNumber}`)
   worksheet.getCell(rowNumber, 14).value = Number(row.lateOver30Count || 0) + earlyOver30Count
-  setFormula(worksheet.getCell(rowNumber, 15), `100000*IF(N${rowNumber}>=1,N${rowNumber})`)
+  setFormula(worksheet.getCell(rowNumber, 15), `${penaltyAmount('late_over_30')}*N${rowNumber}`)
   worksheet.getCell(rowNumber, 16).value = Number(row.missingPunchCount || 0)
-  setFormula(worksheet.getCell(rowNumber, 17), `50000*IF(P${rowNumber}>=1,P${rowNumber})`)
+  setFormula(worksheet.getCell(rowNumber, 17), `${penaltyAmount('missing_punch')}*P${rowNumber}`)
   worksheet.getCell(rowNumber, 18).value = null // FIELD_NOT_AVAILABLE: không trực nhật
-  setFormula(worksheet.getCell(rowNumber, 19), `50000*IF(R${rowNumber}>=1,R${rowNumber})`)
+  setFormula(worksheet.getCell(rowNumber, 19), `${penaltyAmount('no_duty')}*R${rowNumber}`)
   worksheet.getCell(rowNumber, 20).value = null // FIELD_NOT_AVAILABLE: nghỉ đột xuất
-  setFormula(worksheet.getCell(rowNumber, 21), `200000*IF(T${rowNumber}>=3,T${rowNumber}-2)`)
+  setFormula(worksheet.getCell(rowNumber, 21), `${penaltyAmount('emergency_leave')}*MAX(0,T${rowNumber}-${policy.penaltyRules.emergencyLeaveFreeCount})`)
   worksheet.getCell(rowNumber, 22).value = Number(row.unapprovedAbsenceCount || 0)
-  setFormula(worksheet.getCell(rowNumber, 23), `200000*IF(V${rowNumber}>=1,V${rowNumber})`)
+  setFormula(worksheet.getCell(rowNumber, 23), `${penaltyAmount('unapproved_absence')}*V${rowNumber}`)
   worksheet.getCell(rowNumber, 24).value = null // FIELD_NOT_AVAILABLE: say xỉn
   setFormula(worksheet.getCell(rowNumber, 25), `M${rowNumber}+O${rowNumber}+Q${rowNumber}+S${rowNumber}+U${rowNumber}+W${rowNumber}+X${rowNumber}`)
   worksheet.getCell(rowNumber, 26).value = null // FIELD_NOT_AVAILABLE: vé xe
@@ -253,7 +255,8 @@ const populateWeeklySummary = (worksheet, rows, month, summaryStartRow, daysInMo
   })
 }
 
-export const buildAttendanceWorkbook = async (templateData, rows, month) => {
+export const buildAttendanceWorkbook = async (templateData, rows, month, attendanceSettings = {}) => {
+  const policy = normalizeAttendancePolicy(attendanceSettings)
   const workbook = new ExcelJS.Workbook()
   await workbook.xlsx.load(templateData)
   const worksheet = workbook.getWorksheet(SHEET_NAME) || workbook.worksheets[0]
@@ -272,7 +275,8 @@ export const buildAttendanceWorkbook = async (templateData, rows, month) => {
       row,
       index,
       month,
-      daysInMonth
+      daysInMonth,
+      policy
     )
   })
   updateTotals(worksheet, rows.length)
@@ -282,13 +286,13 @@ export const buildAttendanceWorkbook = async (templateData, rows, month) => {
   return workbook
 }
 
-export const downloadAttendanceFromGoldenTemplate = async ({ rows, month, fileName }) => {
+export const downloadAttendanceFromGoldenTemplate = async ({ rows, month, fileName, attendanceSettings = {} }) => {
   const response = await fetch(TEMPLATE_URL)
   if (!response.ok) {
     throw new Error(`Không tải được golden template (${response.status}).`)
   }
   const templateData = await response.arrayBuffer()
-  const workbook = await buildAttendanceWorkbook(templateData, rows, month)
+  const workbook = await buildAttendanceWorkbook(templateData, rows, month, attendanceSettings)
   const output = await workbook.xlsx.writeBuffer()
   const blob = new Blob([output], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'

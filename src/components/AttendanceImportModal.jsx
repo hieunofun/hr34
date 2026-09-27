@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import XLSX from 'xlsx-js-style'
 import { fbGet, fbUpdate } from '../services/firebase'
 import { supabase } from '../services/supabase'
-import { commitHr34AttendanceImport } from '../services/hr34AttendanceImport'
-import { useAuth } from '../contexts/AuthContext'
+import { commitAttendanceImport } from '../services/attendanceImportCommit'
+import { useCompany } from '../contexts/CompanyContext'
 import {
   applyEmployeeToAttendanceLog,
   buildSourceEmployeeKey,
@@ -23,13 +23,14 @@ import {
   calculateAttendanceTiming,
   formatAttendanceTime,
   getAttendanceShiftOptions,
+  normalizeAttendanceShiftSettings,
   resolveAttendanceShift
 } from '../utils/attendanceShift'
 import {
   calculateAttendanceMetrics,
   STANDARD_WORK_MINUTES
 } from '../utils/attendanceCalculations'
-import { getCompanyIdForUser } from '../utils/companyContext'
+import { requireTenantCompanyId } from '../services/tenantSession'
 
 const { read, utils, writeFile } = XLSX
 
@@ -43,8 +44,8 @@ function AttendanceImportModal({
   companyId,
   companyName
 }) {
-  const { user } = useAuth()
-  const activeCompanyId = companyId || getCompanyIdForUser(user)
+  const { companyId: sessionCompanyId } = useCompany()
+  const activeCompanyId = requireTenantCompanyId(companyId || sessionCompanyId)
   const [file, setFile] = useState(null)
   const [referenceImage, setReferenceImage] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -142,6 +143,8 @@ function AttendanceImportModal({
     const metrics = calculateAttendanceMetrics({
       checkIn: checkInStr,
       checkOut: checkOutStr,
+      attendanceSettings,
+      shift,
       standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
       // Import Excel không tự trừ lunch cứng; nếu doanh nghiệp muốn trừ
       // khoảng nghỉ thì khai báo rõ trong Cài đặt chấm công.
@@ -236,6 +239,8 @@ function AttendanceImportModal({
       log: extra,
       checkIn: checkInStr,
       checkOut: checkOutStr,
+      attendanceSettings,
+      shift: resolvedShift,
       standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
       breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
       autoCalculateOvertime: attendanceSettings?.overtime?.autoCalculate !== false,
@@ -307,7 +312,7 @@ function AttendanceImportModal({
       // các dòng mã công không có giờ vào/ra.
       cong: Number(hasActualPunchPair
         ? metrics.regularWorkdays
-        : (extra.cong ?? stats.regularWorkdays ?? (hours >= 8 ? 1 : hours > 0 ? 0.5 : 0))) || 0,
+        : metrics.regularWorkdays) || 0,
       hours,
       gio: hours,
       congPlus: Number(extra.congPlus ?? 0) || 0,
@@ -633,6 +638,7 @@ function AttendanceImportModal({
       month = month || m
     }
 
+    const policy = normalizeAttendanceShiftSettings(attendanceSettings)
     // Check if sheet contains hours worked (values >= 2.5) or standard workdays (công <= 1.0)
     let countOver2_5 = 0
     for (let r = dataStartRow; r < jsonData.length; r++) {
@@ -703,23 +709,22 @@ function AttendanceImportModal({
             const n = parseFloat(cellStr.replace(',', '.'))
             if (!isNaN(n)) {
               hours = Number(n)
-              // Quy tắc chuẩn: 480 phút = 1 công, tối đa 1 công/ngày.
-              cong = Math.min(Math.max(0, hours * 60) / (Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES), 1)
+              cong = Math.min(policy.maxWorkUnitPerDay, Math.max(0, hours * 60) / policy.standardWorkMinutes * policy.standardWorkUnit)
               status = hours > 0 ? `${hours}h` : 'Nghỉ'
             }
           } else {
             if (upper === '1' || upper === 'X' || upper === 'Đ' || upper === 'DU') {
-              cong = 1.0
-              hours = 8.0
+              cong = policy.standardWorkUnit
+              hours = policy.standardWorkMinutes / 60
               status = 'Đủ'
             } else if (upper === '0.5') {
-              cong = 0.5
-              hours = 4.0
+              cong = policy.standardWorkUnit / 2
+              hours = policy.standardWorkMinutes / 120
               status = 'Nửa ngày'
             } else if (upper.startsWith('P')) {
               const pVal = parseFloat(upper.replace('P', '')) || 1.0
-              cong = pVal
-              hours = pVal * 8.0
+              cong = pVal * policy.standardWorkUnit
+              hours = pVal * policy.standardWorkMinutes / 60
               status = 'Phép'
             } else if (upper === '0' || upper === '0.00' || upper === 'KP' || upper === 'OFF') {
               cong = 0
@@ -729,8 +734,8 @@ function AttendanceImportModal({
               const n = parseFloat(cellStr.replace(',', '.'))
               if (!isNaN(n)) {
                 cong = n
-                hours = Math.round(n * 8 * 100) / 100
-                status = cong >= 1 ? 'Đủ' : cong > 0 ? 'Nửa ngày' : 'Nghỉ'
+                hours = Math.round(n * policy.standardWorkMinutes / 60 * 100) / 100
+                status = cong >= policy.standardWorkUnit ? 'Đủ' : cong > 0 ? 'Nửa ngày' : 'Nghỉ'
               }
             }
           }
@@ -739,7 +744,7 @@ function AttendanceImportModal({
             mergedData[key] = {
               emp: currentSysEmp,
               day,
-              times: hours > 0 ? ['08:00', '17:00'] : [],
+              times: hours > 0 ? [policy.workStart, policy.workEnd] : [],
               rawVal: cellStr,
               directCong: cong,
               directHours: hours,
@@ -762,8 +767,8 @@ function AttendanceImportModal({
 
       if (item.isCodeOnly) {
         const directStats = {
-          checkIn: item.directHours > 0 ? '08:00' : '',
-          checkOut: item.directHours > 0 ? '17:00' : '',
+          checkIn: item.directHours > 0 ? policy.workStart : '',
+          checkOut: item.directHours > 0 ? policy.workEnd : '',
           hours: item.directHours,
           cong: item.directCong,
           status: item.directStatus || item.rawVal,
@@ -1406,7 +1411,7 @@ function AttendanceImportModal({
       !group.selectedEmployeeId && group.status !== 'skipped'
     ).length
     if (unresolvedCount > 0) {
-      alert(`Còn ${unresolvedCount} nhân viên chưa được ghép hồ sơ HR34. Hãy ghép hoặc bỏ qua trước khi nhập.`)
+      alert(`Còn ${unresolvedCount} nhân viên chưa được ghép hồ sơ của công ty hiện tại. Hãy ghép hoặc bỏ qua trước khi nhập.`)
       return
     }
 
@@ -1427,10 +1432,20 @@ function AttendanceImportModal({
     importInProgressRef.current = true
     setLoading(true)
     try {
+      const importPolicy = normalizeAttendanceShiftSettings(attendanceSettings)
+      const importValuesAllowed = importPolicy.importPriorityMode !== 'raw_punch' ||
+        importPolicy.workUnitCalculationMode === 'imported'
       const preparedLogs = previewData.logs.map(log => {
         if (skippedSourceKeys.has(log._sourceEmployeeKey)) return log
         const employee = employeesById.get(String(log.employeeId))
-        if (!employee || log.syntheticPunch || ['source-value', 'matrix-value'].includes(log.calculationMode)) return log
+        if (!employee) throw new Error(`Không tìm thấy hồ sơ nhân viên đã ghép cho bản ghi ${log.date || ''}.`)
+        if (log.syntheticPunch) return log
+        const hasRawPunch = Boolean(formatAttendanceTime(log.vao || log.checkIn) ||
+          formatAttendanceTime(log.ra || log.checkOut) ||
+          (Array.isArray(log.punchPairs) && log.punchPairs.length))
+        if (['source-value', 'matrix-value'].includes(log.calculationMode) &&
+          (importValuesAllowed || !hasRawPunch) &&
+          (importPolicy.missingPunchPolicy !== 'manual_review' || !hasRawPunch)) return log
         const shift = resolveAttendanceShift(employee, log, attendanceSettings)
         const metrics = calculateAttendanceMetrics({
           log,
@@ -1439,6 +1454,7 @@ function AttendanceImportModal({
           attendanceSettings,
           punchPairs: log.punchPairs,
           splitShift: shift?.splitShift,
+          shift,
           standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
           breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
           autoCalculateOvertime: attendanceSettings?.overtime?.autoCalculate !== false,
@@ -1446,8 +1462,10 @@ function AttendanceImportModal({
           fallbackWorkdays: log.cong
         })
         const timed = applyCalculatedAttendanceTiming(log, employee, attendanceSettings)
-        return metrics.hasPunchPair ? {
+        return {
           ...timed,
+          importedHours: log.importedHours ?? log.hours,
+          importedWorkUnit: log.importedWorkUnit ?? log.cong,
           cong: metrics.regularWorkdays,
           hours: metrics.hours,
           gio: metrics.hours,
@@ -1461,9 +1479,9 @@ function AttendanceImportModal({
             : false,
           calculationMode: metrics.calculationMode,
           splitShiftBreakdown: metrics.splitShiftBreakdown
-        } : timed
+        }
       })
-      const result = await commitHr34AttendanceImport({
+      const result = await commitAttendanceImport({
         supabase,
         fbGet,
         fbUpdate,
@@ -1915,7 +1933,7 @@ function AttendanceImportModal({
                   disabled={loading || unresolvedEmployeeCount > 0}
                   title={
                     unresolvedEmployeeCount > 0
-                      ? 'Hãy ghép hoặc bỏ qua mọi nhân viên trước khi lưu vào HR34'
+                      ? 'Hãy ghép hoặc bỏ qua mọi nhân viên trước khi lưu vào công ty hiện tại'
                       : ''
                   }
                 >

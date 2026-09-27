@@ -1,10 +1,14 @@
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { useCompany } from '../contexts/CompanyContext'
+import CompanyLogo from './CompanyLogo'
+import { companyDisplayName } from '../utils/companyBrand'
 import { isAccountingUser, isCoreStaffUser } from '../utils/staffAccess'
 
 function Sidebar() {
   const location = useLocation()
   const { user } = useAuth()
+  const { companyName, logoUrl } = useCompany()
 
   const primaryStaffItems = [
     { path: '/employees', icon: 'fas fa-users', label: 'Hồ sơ nhân sự' },
@@ -55,8 +59,8 @@ function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <img src="/hr-logo.svg" alt="HR34" />
-        <span>HR34</span>
+        <CompanyLogo logoUrl={logoUrl} alt="" />
+        <span>{companyDisplayName(companyName)}</span>
       </div>
 
       {accountingOnly ? (

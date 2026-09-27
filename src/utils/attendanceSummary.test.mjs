@@ -399,7 +399,7 @@ test('summary dùng Vào đầu và Ra cuối cho cặp chia buổi bị thiếu
   assert.equal(afternoonDay.calculationMode, 'split-shift')
 })
 
-test('giữ Công và Giờ nguồn khi import chọn chế độ theo Excel', () => {
+test('giữ Công và Giờ nguồn khi policy ưu tiên Công từ Excel', () => {
   const summary = summarizeAttendanceDay([
     {
       employeeId: 'nv-source',
@@ -412,7 +412,7 @@ test('giữ Công và Giờ nguồn khi import chọn chế độ theo Excel', (
       earlyMinutes: 3,
       calculationMode: 'source-value'
     }
-  ])
+  ], {}, { importPriorityMode: 'imported_work_unit' })
 
   assert.equal(summary.regularWorkdaysExact, 0.5)
   assert.equal(summary.hoursExact, 4)

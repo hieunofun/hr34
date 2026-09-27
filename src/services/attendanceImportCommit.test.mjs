@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildChamCongRows, planHr34AttendanceImport } from './hr34AttendanceImport.js'
+import { buildChamCongRows, planAttendanceImport } from './attendanceImportCommit.js'
 
 const companyId = '00000000-0000-0000-0000-000000000034'
 const sample = {
@@ -34,17 +34,17 @@ test('rejects a source code mapped to another company employee', () => {
 })
 
 test('plans idempotent updates by employee and date and blocks manual records', () => {
-  assert.equal(planHr34AttendanceImport({ incomingLogs: [sample] }).inserts.length, 1)
+  assert.equal(planAttendanceImport({ incomingLogs: [sample] }).inserts.length, 1)
   const existing = { ...sample, id: 'excel_person-1', sourceType: 'excel-import', ra: '17:00' }
-  const plan = planHr34AttendanceImport({ incomingLogs: [sample], existingLogs: [existing] })
+  const plan = planAttendanceImport({ incomingLogs: [sample], existingLogs: [existing] })
   assert.equal(plan.inserts.length, 0)
   assert.equal(plan.updates.length, 1)
   assert.equal(plan.conflicts.length, 0)
-  const manual = planHr34AttendanceImport({
+  const manual = planAttendanceImport({
     incomingLogs: [sample],
     existingLogs: [{ employeeId: 'person-1', date: '2026-09-01', sourceType: 'manual', id: 'manual-1' }]
   })
   assert.match(manual.conflicts[0].reason, /nguồn khác/)
-  const duplicate = planHr34AttendanceImport({ incomingLogs: [sample, sample] })
+  const duplicate = planAttendanceImport({ incomingLogs: [sample, sample] })
   assert.equal(duplicate.conflicts.length, 1)
 })

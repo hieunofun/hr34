@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { getCompanyIdForUser } from '../utils/companyContext'
 import { fbGet, fbGetAttendanceByEmployee } from '../services/firebase'
 import { buildAttendanceSummary } from '../utils/attendanceSummary'
 import {
@@ -19,7 +18,6 @@ const timeValue = value => {
 
 function MyAttendance() {
   const { user } = useAuth()
-  const companyId = getCompanyIdForUser(user)
   const employeeId = String(user.id)
   const [logs, setLogs] = useState([])
   const [attendanceSettings, setAttendanceSettings] = useState(() => normalizeAttendanceShiftSettings())

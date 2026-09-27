@@ -1,9 +1,11 @@
-import { supabase, DEFAULT_COMPANY_ID } from './supabase'
+import { supabase } from './supabase'
+import { requireTenantCompanyId } from './tenantSession'
 
 /**
  * Lấy thông tin công ty
  */
-export async function getCompanyInfo(companyId = DEFAULT_COMPANY_ID) {
+export async function getCompanyInfo(companyId) {
+  companyId = requireTenantCompanyId(companyId)
   const { data, error } = await supabase
     .from('companies')
     .select('*')
@@ -20,7 +22,8 @@ export async function getCompanyInfo(companyId = DEFAULT_COMPANY_ID) {
 /**
  * Lấy danh sách nhân sự của công ty
  */
-export async function getEmployees(companyId = DEFAULT_COMPANY_ID) {
+export async function getEmployees(companyId) {
+  companyId = requireTenantCompanyId(companyId)
   const { data, error } = await supabase
     .from('nhan_su')
     .select('*')
@@ -37,7 +40,8 @@ export async function getEmployees(companyId = DEFAULT_COMPANY_ID) {
 /**
  * Thêm hoặc cập nhật nhân sự
  */
-export async function upsertEmployees(employees, companyId = DEFAULT_COMPANY_ID) {
+export async function upsertEmployees(employees, companyId) {
+  companyId = requireTenantCompanyId(companyId)
   const rows = employees.map(emp => ({
     company_id: companyId,
     ma_nhan_vien: String(emp.ma_nhan_vien || emp.maNV || '').trim(),
@@ -66,7 +70,8 @@ export async function upsertEmployees(employees, companyId = DEFAULT_COMPANY_ID)
 /**
  * Lấy dữ liệu chấm công chi tiết theo tháng (Ma trận 31 ngày)
  */
-export async function getMonthlyAttendance(yearMonth, companyId = DEFAULT_COMPANY_ID) {
+export async function getMonthlyAttendance(yearMonth, companyId) {
+  companyId = requireTenantCompanyId(companyId)
   const [year, month] = yearMonth.split('-').map(Number)
   const startDate = `${yearMonth}-01`
   const lastDay = new Date(year, month, 0).getDate()
@@ -104,7 +109,8 @@ export async function getMonthlyAttendance(yearMonth, companyId = DEFAULT_COMPAN
 /**
  * Lưu danh sách chấm công ma trận vào Supabase B
  */
-export async function saveAttendanceBatch(records, companyId = DEFAULT_COMPANY_ID) {
+export async function saveAttendanceBatch(records, companyId) {
+  companyId = requireTenantCompanyId(companyId)
   if (!records || records.length === 0) return []
 
   // Đảm bảo có company_id
@@ -137,7 +143,8 @@ export async function saveAttendanceBatch(records, companyId = DEFAULT_COMPANY_I
 /**
  * Lưu bảng tổng hợp công tháng vào Supabase B
  */
-export async function saveMonthlySummaryBatch(summaries, companyId = DEFAULT_COMPANY_ID) {
+export async function saveMonthlySummaryBatch(summaries, companyId) {
+  companyId = requireTenantCompanyId(companyId)
   if (!summaries || summaries.length === 0) return []
 
   const payload = summaries.map(s => ({

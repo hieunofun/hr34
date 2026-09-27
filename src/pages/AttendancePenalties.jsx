@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCompany } from '../contexts/CompanyContext'
 import { fbGet, fbListCollectionIds } from '../services/firebase'
 import {
   getPenaltiesByMonth,
@@ -8,11 +9,12 @@ import {
 } from '../services/attendancePenaltiesDb'
 import { hydrateAttendanceSummaryRows } from '../utils/attendanceSummary'
 import {
-  PENALTY_CATEGORIES,
   buildPenaltyDetailRows,
   createEmptyPenaltyRow,
+  normalizePenaltyCategories,
   normalizePenaltyRows
 } from '../utils/attendancePenalties'
+import { normalizeAttendancePolicy } from '../utils/attendanceShift'
 import './AttendancePenalties.css'
 
 const money = value => Number(value || 0).toLocaleString('vi-VN')
@@ -108,6 +110,9 @@ function EmployeeNameSuggest({ employees, employeeId, employeeName, employeeCode
 }
 
 function AttendancePenalties() {
+  const { companyId } = useCompany()
+  const [penaltyPolicy, setPenaltyPolicy] = useState(() => normalizeAttendancePolicy())
+  const categories = useMemo(() => normalizePenaltyCategories(penaltyPolicy.penaltyRules.categories), [penaltyPolicy])
   const [month, setMonth] = useState(currentMonthValue)
   const [months, setMonths] = useState([])
   const [rows, setRows] = useState([])
@@ -161,14 +166,17 @@ function AttendancePenalties() {
       setError('')
       const initialMonth = currentMonthValue()
       try {
-        const [penaltyMonthsResult, summaryIdsResult, employeesResult, monthRowsResult] = await Promise.allSettled([
+        const [penaltyMonthsResult, summaryIdsResult, employeesResult, monthRowsResult, settingsResult] = await Promise.allSettled([
           listPenaltyMonths(),
           fbListCollectionIds('attendanceMonthSummaries'),
           listPenaltyEmployeesSlim(),
-          getPenaltiesByMonth(initialMonth)
+          getPenaltiesByMonth(initialMonth),
+          fbGet('hr/attendanceSettings/default', companyId)
         ])
 
         if (cancelled) return
+        if (settingsResult.status === 'rejected') throw settingsResult.reason
+        setPenaltyPolicy(normalizeAttendancePolicy(settingsResult.value))
 
         if (penaltyMonthsResult.status === 'rejected') {
           const message = String(penaltyMonthsResult.reason?.message || '')
@@ -213,7 +221,7 @@ function AttendancePenalties() {
       }
     })()
     return () => { cancelled = true }
-  }, [])
+  }, [companyId])
 
   const handleMonthChange = async (nextMonth) => {
     if (dirty && !confirm('Bạn có thay đổi chưa lưu. Đổi tháng sẽ mất thay đổi đó. Tiếp tục?')) {
@@ -224,7 +232,7 @@ function AttendancePenalties() {
 
   const handleAddRow = async () => {
     if (!employees.length) await loadEmployees()
-    setRows(prev => [...prev, createEmptyPenaltyRow(month)])
+    setRows(prev => [...prev, createEmptyPenaltyRow(month, categories)])
     setDirty(true)
   }
 
@@ -242,7 +250,7 @@ function AttendancePenalties() {
   }
 
   const handleSelectCategory = (rowId, category) => {
-    const found = PENALTY_CATEGORIES.find(item => item.label === category)
+    const found = categories.find(item => item.label === category)
     handleUpdateRow(rowId, {
       category,
       amount: found ? found.amount : 0
@@ -287,7 +295,7 @@ function AttendancePenalties() {
   const handleFillFromAttendance = async () => {
     const targetMonth = month || currentMonthValue()
     try {
-      const snapshot = await fbGet(`hr/attendanceMonthSummaries/${targetMonth}`)
+      const snapshot = await fbGet(`hr/attendanceMonthSummaries/${targetMonth}`, companyId)
       if (!snapshot?.rows?.length) {
         alert('Chưa có bảng công tổng hợp cho tháng này. Hãy Tổng hợp ở trang Bảng Công trước.')
         return
@@ -296,7 +304,12 @@ function AttendancePenalties() {
         return
       }
       const summaryRows = hydrateAttendanceSummaryRows(snapshot.rows)
-      setRows(normalizePenaltyRows(buildPenaltyDetailRows(summaryRows)))
+      const policy = snapshot.policySnapshot
+        ? normalizeAttendancePolicy(snapshot.policySnapshot)
+        : penaltyPolicy
+      setRows(normalizePenaltyRows(buildPenaltyDetailRows(
+        summaryRows, normalizePenaltyCategories(policy.penaltyRules.categories), policy.latePenaltyThresholdMinutes
+      )))
       setDirty(true)
     } catch (requestError) {
       console.error(requestError)
@@ -396,10 +409,10 @@ function AttendancePenalties() {
                         value={item.category || ''}
                         onChange={event => handleSelectCategory(item.id, event.target.value)}
                       >
-                        {PENALTY_CATEGORIES.map(category => (
+                        {categories.map(category => (
                           <option key={category.label} value={category.label}>{category.label}</option>
                         ))}
-                        {item.category && !PENALTY_CATEGORIES.some(category => category.label === item.category) && (
+                        {item.category && !categories.some(category => category.label === item.category) && (
                           <option value={item.category}>{item.category}</option>
                         )}
                       </select>

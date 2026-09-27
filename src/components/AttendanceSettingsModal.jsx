@@ -1,20 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useAuth } from '../contexts/AuthContext'
+import { useCompany } from '../contexts/CompanyContext'
 import { fbGet, fbUpdate } from '../services/firebase'
-import { getCompanyIdForUser } from '../utils/companyContext'
-import { DEFAULT_COMPANY_ID } from '../services/supabase'
+import { requireTenantCompanyId } from '../services/tenantSession'
 import { getCloudinaryConfig, saveCloudinaryConfig } from '../utils/cloudinary'
 import {
   ATTENDANCE_SHIFT_IDS,
   buildAttendanceShiftSettingsPayload,
   getAttendanceShiftOptions,
   normalizeAttendanceShiftSettings,
-  validateAttendanceSettings
+  validateAttendancePolicy
 } from '../utils/attendanceShift'
 
 function AttendanceSettingsModal({ isOpen, onClose, onSaved, companyId: propCompanyId }) {
-  const { user } = useAuth()
-  const activeCompanyId = propCompanyId || getCompanyIdForUser(user) || DEFAULT_COMPANY_ID
+  const { companyId: sessionCompanyId } = useCompany()
+  const activeCompanyId = requireTenantCompanyId(propCompanyId || sessionCompanyId)
 
   const [settings, setSettings] = useState(() => normalizeAttendanceShiftSettings())
   const [selectedShiftId, setSelectedShiftId] = useState(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
@@ -52,18 +51,37 @@ function AttendanceSettingsModal({ isOpen, onClose, onSaved, companyId: propComp
     setError('')
     setSettings(current => {
       const next = { ...current, [field]: value }
-      return normalizeAttendanceShiftSettings(next)
+      const shiftField = field === 'workStart' ? 'standardCheckIn' : field === 'workEnd' ? 'standardCheckOut' : field
+      const session = field === 'workStart' || field === 'lunchStart' ? 'morning' : 'afternoon'
+      const sessionField = field === 'workStart' || field === 'lunchEnd' ? 'start' : 'end'
+      const admin = current.shifts.administrative
+      next.shifts = {
+        ...current.shifts,
+        administrative: { ...admin, [shiftField]: value,
+          splitShift: { ...admin.splitShift,
+            [session]: { ...(admin.splitShift?.[session] || {}), [sessionField]: value } } }
+      }
+      return next
     })
   }
 
   const updateSelectedShift = (field, value) => {
     setSettings(current => ({
       ...current,
+      ...(selectedShiftId === ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE && field === 'standardCheckIn' ? { workStart: value } : {}),
+      ...(selectedShiftId === ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE && field === 'standardCheckOut' ? { workEnd: value } : {}),
       shifts: {
         ...current.shifts,
         [selectedShiftId]: {
           ...current.shifts[selectedShiftId],
-          [field]: value
+          [field]: value,
+          ...(field === 'standardCheckIn' || field === 'standardCheckOut' ? {
+            splitShift: { ...current.shifts[selectedShiftId].splitShift,
+              [field === 'standardCheckIn' ? 'morning' : 'afternoon']: {
+                ...(current.shifts[selectedShiftId].splitShift?.[field === 'standardCheckIn' ? 'morning' : 'afternoon'] || {}),
+                [field === 'standardCheckIn' ? 'start' : 'end']: value
+              } }
+          } : {})
         }
       }
     }))
@@ -91,7 +109,7 @@ function AttendanceSettingsModal({ isOpen, onClose, onSaved, companyId: propComp
     event.preventDefault()
 
     // 1. Validation 4 mốc giờ theo quy định: workStart < lunchStart < lunchEnd < workEnd
-    const scheduleValidation = validateAttendanceSettings(settings)
+    const scheduleValidation = validateAttendancePolicy(settings)
     if (!scheduleValidation.isValid) {
       setError(scheduleValidation.error)
       return
@@ -112,7 +130,7 @@ function AttendanceSettingsModal({ isOpen, onClose, onSaved, companyId: propComp
     try {
       await fbUpdate(
         'hr/attendanceSettings/default',
-        buildAttendanceShiftSettingsPayload(settings),
+        buildAttendanceShiftSettingsPayload({ ...settings, policyVersion: Number(settings.policyVersion || 0) + 1 }),
         activeCompanyId
       )
       saveCloudinaryConfig(cloudName, uploadPreset)
@@ -210,6 +228,23 @@ function AttendanceSettingsModal({ isOpen, onClose, onSaved, companyId: propComp
                     </div>
                   </div>
 
+                  <div className="form-group" style={{ maxWidth: 240, marginTop: 12 }}>
+                    <label htmlFor="setting-monthly-standard-work-units">Công chuẩn tháng</label>
+                    <input
+                      id="setting-monthly-standard-work-units"
+                      type="number"
+                      min="0.01"
+                      step="0.5"
+                      value={settings.monthlyStandardWorkUnits ?? ''}
+                      onChange={event => setSettings(current => ({
+                        ...current,
+                        monthlyStandardWorkUnits: Number(event.target.value)
+                      }))}
+                      required
+                    />
+                    <small>Chỉ dùng trong cột Công chuẩn của báo cáo tháng.</small>
+                  </div>
+
                   {/* Summary card showing calculated periods */}
                   <div style={{ marginTop: 14, padding: '10px 14px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 13, color: '#1e40af' }}>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
@@ -303,6 +338,7 @@ function AttendanceSettingsModal({ isOpen, onClose, onSaved, companyId: propComp
             )}
           </div>
           <div className="attendance-settings__footer">
+            <a href="/holiday-settings?tab=shifts" className="btn">Quy tắc tính công nâng cao</a>
             <button className="btn" type="button" onClick={onClose}>Hủy</button>
             <button className="btn btn-primary" type="submit" disabled={loading || saving}>
               {saving ? 'Đang lưu...' : 'Lưu cài đặt'}

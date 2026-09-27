@@ -1,9 +1,13 @@
 
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { useCompany } from '../contexts/CompanyContext'
+import CompanyLogo from './CompanyLogo'
+import { companyDisplayName } from '../utils/companyBrand'
 
 function Header() {
   const { user, logout } = useAuth()
+  const { companyName, logoUrl } = useCompany()
   const navigate = useNavigate()
   const displayName = user?.ho_va_ten || user?.email || 'Người dùng'
   const initial = displayName.trim().charAt(0).toUpperCase() || 'N'
@@ -14,8 +18,8 @@ function Header() {
   return (
     <header className="header">
       <div className="logo">
-        <img src="/hr-logo.svg" alt="HR34" />
-        <h1>DEOCA <span>HR</span></h1>
+        <CompanyLogo logoUrl={logoUrl} alt="" />
+        <h1>{companyDisplayName(companyName)}</h1>
       </div>
       <div className="user-info">
         <span>{displayName}</span>

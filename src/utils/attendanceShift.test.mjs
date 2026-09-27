@@ -83,6 +83,16 @@ test('reuses the existing Trang team mapping to identify Sale employees', () => 
   assert.deepEqual(result, resolveAttendanceShift({ position: 'Sale' }))
 })
 
+test('configured shift ID and exact name take priority over Sale role inference', () => {
+  const settings = normalizeAttendanceShiftSettings({ shifts: {
+    custom_evening: { name: 'Ca tối riêng', standardCheckIn: '15:00', standardCheckOut: '23:00' }
+  } })
+  assert.equal(resolveAttendanceShift({ position: 'Sale', shift_id: 'custom_evening' }, {}, settings).name, 'Ca tối riêng')
+  assert.equal(resolveAttendanceShift({ position: 'Sale', shift: 'Ca tối riêng' }, {}, settings).start, '15:00')
+  assert.equal(resolveAttendanceShift({ position: 'Sale', shift_id: 'administrative' },
+    { shift_id: 'custom_evening' }, settings).name, 'Ca tối riêng')
+})
+
 test('prefers an explicit shift range in the attendance row over Sale inference', () => {
   const result = resolveAttendanceShift(
     { position: 'Sale' },

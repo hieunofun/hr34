@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
+import { useCompany } from '../contexts/CompanyContext'
 import { useSearchParams } from 'react-router-dom'
 import LeaveSettingsPanel from '../components/LeaveSettingsPanel'
 import { fbGet, fbUpdate } from '../services/firebase'
-import { getCompanyIdForUser } from '../utils/companyContext'
 import {
   ATTENDANCE_SHIFT_IDS,
   buildAttendanceShiftSettingsPayload,
   getAttendanceShiftOptions,
-  normalizeAttendanceShiftSettings
+  normalizeAttendanceShiftSettings,
+  validateAttendancePolicy
 } from '../utils/attendanceShift'
 import {
   createPenaltyCategory,
@@ -38,8 +39,8 @@ const sortHolidays = holidays => [...(holidays || [])]
 function HolidaySettings() {
   const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
-  const companyId = useMemo(() => getCompanyIdForUser(user), [user])
-  const leaveCompanyId = user?.company_id || user?.companyId || companyId
+  const { companyId } = useCompany()
+  const leaveCompanyId = companyId
   const canEditLeave = user?.role === 'admin' || user?.role === 'hr'
   const requestedTab = searchParams.get('tab')
   const activeTab = requestedTab === 'leave' && !canEditLeave ? 'holidays' :
@@ -64,7 +65,7 @@ function HolidaySettings() {
       const stored = await fbGet('hr/attendanceSettings/default', companyId)
       const nextSettings = normalizeAttendanceShiftSettings(stored)
       setSettings(nextSettings)
-      setPenaltyCategories(normalizePenaltyCategories(stored?.penaltyCategories))
+      setPenaltyCategories(normalizePenaltyCategories(stored?.penaltyRules?.categories || stored?.penaltyCategories))
       setSelectedShiftId(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
     } catch (requestError) {
       setError(requestError.message || 'Không tải được cài đặt.')
@@ -83,7 +84,17 @@ function HolidaySettings() {
     setNotice('')
     setSettings(current => {
       const next = { ...current, [field]: value }
-      return normalizeAttendanceShiftSettings(next)
+      const shiftField = field === 'workStart' ? 'standardCheckIn' : field === 'workEnd' ? 'standardCheckOut' : field
+      const session = field === 'workStart' || field === 'lunchStart' ? 'morning' : 'afternoon'
+      const sessionField = field === 'workStart' || field === 'lunchEnd' ? 'start' : 'end'
+      const admin = current.shifts.administrative
+      next.shifts = {
+        ...current.shifts,
+        administrative: { ...admin, [shiftField]: value,
+          splitShift: { ...admin.splitShift,
+            [session]: { ...(admin.splitShift?.[session] || {}), [sessionField]: value } } }
+      }
+      return next
     })
   }
 
@@ -119,11 +130,22 @@ function HolidaySettings() {
   const updateSelectedShift = (field, value) => {
     setSettings(current => ({
       ...current,
+      ...(selectedShiftId === ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE && field === 'standardCheckIn' ? { workStart: value } : {}),
+      ...(selectedShiftId === ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE && field === 'standardCheckOut' ? { workEnd: value } : {}),
+      ...(selectedShiftId === ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE && field === 'standardWorkMinutes' ? { standardWorkMinutes: value } : {}),
+      ...(selectedShiftId === ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE && field === 'unpaidBreakMinutes' ? { unpaidBreakMinutes: value } : {}),
       shifts: {
         ...current.shifts,
         [selectedShiftId]: {
           ...current.shifts[selectedShiftId],
-          [field]: value
+          [field]: value,
+          ...(field === 'standardCheckIn' || field === 'standardCheckOut' ? {
+            splitShift: { ...current.shifts[selectedShiftId].splitShift,
+              [field === 'standardCheckIn' ? 'morning' : 'afternoon']: {
+                ...(current.shifts[selectedShiftId].splitShift?.[field === 'standardCheckIn' ? 'morning' : 'afternoon'] || {}),
+                [field === 'standardCheckIn' ? 'start' : 'end']: value
+              } }
+          } : {})
         }
       }
     }))
@@ -196,6 +218,13 @@ function HolidaySettings() {
       const shift = current.shifts[selectedShiftId]
       return {
         ...current,
+        ...(selectedShiftId === ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE ? {
+          splitShiftEnabled: enabled,
+          workUnitCalculationMode: enabled ? 'split_shift'
+            : current.workUnitCalculationMode === 'split_shift' ? 'proportional' : current.workUnitCalculationMode
+        } : {}),
+        ...(selectedShiftId === ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE && field === 'workdays'
+          ? { [session === 'morning' ? 'morningWeight' : 'afternoonWeight']: value } : {}),
         shifts: {
           ...current.shifts,
           [selectedShiftId]: {
@@ -239,6 +268,13 @@ function HolidaySettings() {
   }
 
   const saveSettings = async () => {
+    const policyValidation = validateAttendancePolicy(settings)
+    if (!policyValidation.isValid) {
+      setActiveTab('shifts')
+      setError(policyValidation.error)
+      setNotice('')
+      return
+    }
     const invalidShift = getAttendanceShiftOptions(settings).find(shift =>
       !shift.name?.trim() || !shift.standardCheckIn || !shift.standardCheckOut ||
       shift.standardCheckIn === shift.standardCheckOut
@@ -284,6 +320,9 @@ function HolidaySettings() {
     try {
       const payload = buildAttendanceShiftSettingsPayload({
         ...settings,
+        policyVersion: Number(settings.policyVersion || 0) + 1,
+        penaltyRules: { ...settings.penaltyRules, categories: normalizedPenalties,
+          latePenaltyThresholdMinutes: settings.latePenaltyThresholdMinutes },
         holidays: sortHolidays(settings.holidays)
       })
       await fbUpdate('hr/attendanceSettings/default', {
@@ -430,6 +469,21 @@ function HolidaySettings() {
                     />
                   </label>
                 </div>
+                <label style={{ display: 'block', maxWidth: 240, marginTop: 12 }}>
+                  <span>Công chuẩn tháng</span>
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.5"
+                    value={settings.monthlyStandardWorkUnits ?? ''}
+                    onChange={event => setSettings(current => ({
+                      ...current,
+                      monthlyStandardWorkUnits: Number(event.target.value)
+                    }))}
+                    required
+                  />
+                  <small>Chỉ dùng cho cột Công chuẩn trong báo cáo tháng.</small>
+                </label>
                 <div style={{ marginTop: 12, padding: '10px 14px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 13, color: '#1e40af' }}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
                     <span><strong>Ca sáng:</strong> {settings.workStart} – {settings.lunchStart} ({settings.morningMinutes || 0} phút)</span>
@@ -490,10 +544,12 @@ function HolidaySettings() {
                     type="number"
                     min="1"
                     step="1"
-                    value={settings.standardWorkMinutes || 480}
+                    value={settings.standardWorkMinutes ?? ''}
                     onChange={event => setSettings(current => ({
                       ...current,
-                      standardWorkMinutes: Number(event.target.value) || 480
+                      standardWorkMinutes: Number(event.target.value),
+                      shifts: { ...current.shifts, administrative: { ...current.shifts.administrative,
+                        standardWorkMinutes: Number(event.target.value) } }
                     }))}
                   />
                 </label>
@@ -506,11 +562,46 @@ function HolidaySettings() {
                     value={settings.unpaidBreakMinutes || 0}
                     onChange={event => setSettings(current => ({
                       ...current,
-                      unpaidBreakMinutes: Math.max(0, Number(event.target.value) || 0)
+                      unpaidBreakMinutes: Number(event.target.value),
+                      shifts: { ...current.shifts, administrative: { ...current.shifts.administrative,
+                        unpaidBreakMinutes: Number(event.target.value) } }
                     }))}
                   />
                 </label>
+                <label><span>Chuẩn công ca này (phút)</span><input type="number" min="1" value={selectedShift?.standardWorkMinutes ?? ''} onChange={event => updateSelectedShift('standardWorkMinutes', Number(event.target.value))} /></label>
+                <label><span>Công đủ ca</span><input type="number" min="0.01" step="0.05" value={selectedShift?.workUnit ?? 1} onChange={event => updateSelectedShift('workUnit', Number(event.target.value))} /></label>
+                <label><span>Nghỉ không tính của ca (phút)</span><input type="number" min="0" value={selectedShift?.unpaidBreakMinutes ?? 0} onChange={event => updateSelectedShift('unpaidBreakMinutes', Number(event.target.value))} /></label>
               </div>
+
+              <details className="holiday-settings-split-card">
+                <summary>Quy tắc tính công nâng cao</summary>
+                <div className="holiday-settings-grid">
+                  <label><span>Cặp Vào/Ra bắt buộc mỗi ngày</span><input type="number" min="1" step="1" value={settings.requiredPunchPairs} onChange={event => setSettings(current => ({ ...current, requiredPunchPairs: Number(event.target.value) }))} /></label>
+                  <label><span>Khi thiếu lượt chấm</span><select value={settings.missingPunchPolicy} onChange={event => setSettings(current => ({ ...current, missingPunchPolicy: event.target.value }))}>
+                    <option value="zero">0 công</option><option value="partial">Tính cặp đủ</option><option value="manual_review">Cần duyệt tay</option><option value="use_first_last">Dùng lần đầu/cuối</option>
+                  </select></label>
+                  <label><span>Cách quy đổi công</span><select value={settings.workUnitCalculationMode} onChange={event => setSettings(current => ({ ...current,
+                    workUnitCalculationMode: event.target.value,
+                    splitShiftEnabled: event.target.value === 'split_shift',
+                    shifts: { ...current.shifts, administrative: { ...current.shifts.administrative,
+                      splitShift: { ...current.shifts.administrative.splitShift, enabled: event.target.value === 'split_shift' } } }
+                  }))}>
+                    <option value="proportional">Theo tỷ lệ phút</option><option value="split_shift">Theo buổi</option><option value="fixed_shift">Đủ ca</option><option value="imported">Theo dữ liệu nhập</option>
+                  </select></label>
+                  <label><span>Công chuẩn</span><input type="number" min="0.01" step="0.05" value={settings.standardWorkUnit} onChange={event => setSettings(current => ({ ...current, standardWorkUnit: Number(event.target.value) }))} /></label>
+                  <label><span>Công tối đa/ngày</span><input type="number" min="0.01" step="0.05" value={settings.maxWorkUnitPerDay} onChange={event => setSettings(current => ({ ...current, maxWorkUnitPerDay: Number(event.target.value) }))} /></label>
+                  <label><span>Muộn miễn trừ (phút)</span><input type="number" min="0" value={settings.lateGraceMinutes} onChange={event => setSettings(current => ({ ...current, lateGraceMinutes: Number(event.target.value) }))} /></label>
+                  <label><span>Sớm miễn trừ (phút)</span><input type="number" min="0" value={settings.earlyLeaveGraceMinutes} onChange={event => setSettings(current => ({ ...current, earlyLeaveGraceMinutes: Number(event.target.value) }))} /></label>
+                  <label><span>Ngưỡng phạt muộn/sớm (phút)</span><input type="number" min="1" value={settings.latePenaltyThresholdMinutes} onChange={event => setSettings(current => ({ ...current, latePenaltyThresholdMinutes: Number(event.target.value) }))} /></label>
+                  <label><span>Ưu tiên dữ liệu import</span><select value={settings.importPriorityMode} onChange={event => setSettings(current => ({ ...current, importPriorityMode: event.target.value }))}><option value="raw_punch">Giờ chấm thô</option><option value="imported_hours">Giờ từ file</option><option value="imported_work_unit">Công từ file</option></select></label>
+                  <label><span>Ưu tiên chỉnh công tay</span><select value={settings.manualOverridePriority} onChange={event => setSettings(current => ({ ...current, manualOverridePriority: event.target.value }))}><option value="none">Không cho phép</option><option value="allowed">Khi chưa có công</option><option value="highest">Luôn ưu tiên</option></select></label>
+                  <label><span>Bắt đầu OT</span><input type="text" placeholder="shift_end hoặc HH:mm" value={settings.overtimeStart} onChange={event => setSettings(current => ({ ...current, overtimeStart: event.target.value }))} /></label>
+                  <label><span>OT tối thiểu (phút)</span><input type="number" min="0" value={settings.overtimeMinMinutes} onChange={event => setSettings(current => ({ ...current, overtimeMinMinutes: Number(event.target.value) }))} /></label>
+                  <label><span>Bước làm tròn OT (phút)</span><input type="number" min="1" value={settings.overtimeRoundingMinutes} onChange={event => setSettings(current => ({ ...current, overtimeRoundingMinutes: Number(event.target.value) }))} /></label>
+                  <label><span>Kiểu làm tròn OT</span><select value={settings.overtimeRoundMode} onChange={event => setSettings(current => ({ ...current, overtimeRoundMode: event.target.value }))}><option value="floor">Xuống</option><option value="nearest">Gần nhất</option><option value="ceil">Lên</option></select></label>
+                </div>
+                <label className="holiday-settings-check"><input type="checkbox" checked={settings.allowOvernightShift === true} onChange={event => setSettings(current => ({ ...current, allowOvernightShift: event.target.checked }))} />Cho phép ca qua đêm</label>
+              </details>
 
               <div className="holiday-settings-split-card">
                 <label className="holiday-settings-check holiday-settings-split-toggle">
@@ -581,6 +672,7 @@ function HolidaySettings() {
                   checked={settings.overtime?.autoCalculate !== false}
                   onChange={event => setSettings(current => ({
                     ...current,
+                    overtimeEnabled: event.target.checked,
                     overtime: { ...(current.overtime || {}), autoCalculate: event.target.checked }
                   }))}
                 />
@@ -601,6 +693,12 @@ function HolidaySettings() {
               Khôi phục mặc định
             </button>
           </div>
+          <label className="holiday-settings-check">
+            <span>Số lần nghỉ đột xuất miễn phạt mỗi tháng</span>
+            <input type="number" min="0" step="1" value={settings.penaltyRules?.emergencyLeaveFreeCount ?? 2}
+              onChange={event => setSettings(current => ({ ...current,
+                penaltyRules: { ...current.penaltyRules, emergencyLeaveFreeCount: Number(event.target.value) } }))} />
+          </label>
 
           {loading ? (
             <div className="holiday-settings-empty">Đang tải cài đặt...</div>

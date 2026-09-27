@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { useCompany } from '../contexts/CompanyContext'
 import { fbDelete, fbGet, fbPush, fbUpdate } from '../services/firebase'
 import { supabase } from '../services/supabase'
 import {
@@ -248,6 +249,7 @@ function emptyStep() {
 function Approvals() {
   const auth = useAuth()
   const authUser = auth?.user || null
+  const { companyId } = useCompany()
   const [searchParams, setSearchParams] = useSearchParams()
 
   const view = searchParams.get('view') || 'list' // list | create | detail | template-form
@@ -403,7 +405,7 @@ function Approvals() {
       console.error('Failed to read recent templates', e)
     }
     loadData()
-  }, [])
+  }, [companyId])
 
   const loadData = async () => {
     try {
@@ -413,7 +415,7 @@ function Approvals() {
       // stays fast even as the table grows (avoids the heavy documents/images blobs
       // that a `select('*')` would drag along).
       const [usersRes, reqData, tplData] = await Promise.all([
-        supabase.from('users').select('id, name, department, position, branch, avatar_url, employee_id, username, email, role'),
+        supabase.from('users').select('id, name, department, position, branch, avatar_url, employee_id, username, email, role').eq('company_id', companyId),
         fbGet(REQUESTS_PATH),
         fbGet(TEMPLATES_PATH)
       ])

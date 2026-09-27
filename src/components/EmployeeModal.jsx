@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
-import { DEFAULT_COMPANY_ID, supabase } from '../services/supabase'
+import { supabase } from '../services/supabase'
+import { fbGet } from '../services/firebase'
+import { requireTenantCompanyId } from '../services/tenantSession'
 import { mapAppToUser, runUsersMutationWithSchemaFallback } from '../utils/helpers'
 import {
+  ATTENDANCE_SHIFT_IDS,
   DEFAULT_ATTENDANCE_SHIFT,
-  SALE_ATTENDANCE_SHIFT
+  getAttendanceShiftOptions
 } from '../utils/attendanceShift'
 
-const EMPLOYEE_SHIFT_OPTIONS = [DEFAULT_ATTENDANCE_SHIFT, SALE_ATTENDANCE_SHIFT]
+const DEFAULT_EMPLOYEE_SHIFT_OPTIONS = getAttendanceShiftOptions()
 
 function normalizeFiles(files = []) {
   return (files || []).map((file, idx) => {
@@ -125,7 +128,7 @@ function getFileIcon(file) {
 }
 
 function EmployeeModal({
-  companyId = DEFAULT_COMPANY_ID,
+  companyId: requestedCompanyId,
   employee,
   isOpen,
   onClose,
@@ -134,6 +137,7 @@ function EmployeeModal({
   departmentOptions = [],
   positionOptions = []
 }) {
+  const companyId = requireTenantCompanyId(requestedCompanyId)
   const [activeTab, setActiveTab] = useState('info')
   const [editingReadOnly, setEditingReadOnly] = useState(false)
   const [formData, setFormData] = useState({
@@ -169,6 +173,31 @@ function EmployeeModal({
   const [showPassword, setShowPassword] = useState(false)
   const [passwordError, setPasswordError] = useState('')
   const [hasExistingPassword, setHasExistingPassword] = useState(false)
+  const [employeeShiftOptions, setEmployeeShiftOptions] = useState(DEFAULT_EMPLOYEE_SHIFT_OPTIONS)
+  const [shiftOptionsError, setShiftOptionsError] = useState('')
+
+  useEffect(() => {
+    if (!isOpen) return undefined
+    let cancelled = false
+    fbGet('hr/attendanceSettings/default', companyId)
+      .then(settings => {
+        if (cancelled) return
+        const options = getAttendanceShiftOptions(settings)
+        setEmployeeShiftOptions(options)
+        setShiftOptionsError('')
+        if (!employee) {
+          const defaultShift = options.find(option => option.id === ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
+          if (defaultShift) {
+            setFormData(previous => previous.ca_lam_viec === DEFAULT_ATTENDANCE_SHIFT.name
+              ? { ...previous, ca_lam_viec: defaultShift.name } : previous)
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setShiftOptionsError('Không tải được danh sách ca của công ty.')
+      })
+    return () => { cancelled = true }
+  }, [companyId, employee, isOpen])
 
   const [avatarUrlInput, setAvatarUrlInput] = useState('')
   const [galleryUrlInput, setGalleryUrlInput] = useState('')
@@ -950,15 +979,16 @@ function EmployeeModal({
                       onChange={handleChange}
                       disabled={!editable}
                     >
-                      {formData.ca_lam_viec && !EMPLOYEE_SHIFT_OPTIONS.some(shift => shift.name === formData.ca_lam_viec) && (
+                      {formData.ca_lam_viec && !employeeShiftOptions.some(shift => shift.name === formData.ca_lam_viec) && (
                         <option value={formData.ca_lam_viec}>{formData.ca_lam_viec} (dữ liệu cũ)</option>
                       )}
-                      {EMPLOYEE_SHIFT_OPTIONS.map(shift => (
+                      {employeeShiftOptions.map(shift => (
                         <option key={shift.name} value={shift.name}>
-                          {shift.name} ({shift.start} - {shift.end})
+                          {shift.name} ({shift.standardCheckIn} - {shift.standardCheckOut})
                         </option>
                       ))}
                     </select>
+                    {shiftOptionsError && <small className="text-danger">{shiftOptionsError}</small>}
                   </div>
                 </div>
 

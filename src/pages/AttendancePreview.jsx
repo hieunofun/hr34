@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
+import { useCompany } from '../contexts/CompanyContext'
 import { fbGet, fbGetAttendanceLogsByMonth, fbGetEmployeesDirectory, fbListCollectionIds, fbSet } from '../services/firebase'
-import { getCompanyInfo } from '../services/companyBDb'
 import {
   buildAttendanceSummary,
   hydrateAttendanceSummaryRows,
@@ -14,7 +14,6 @@ import {
   normalizeAttendanceShiftSettings,
   resolveAttendanceShift
 } from '../utils/attendanceShift'
-import { getCompanyIdForUser, getCompanyNameForContext } from '../utils/companyContext'
 import { parseManualWorkdayInput, updateManualWorkdays } from '../utils/attendanceManual'
 import {
   describeDayWorkFormula,
@@ -163,13 +162,6 @@ const dayNotes = day => {
   return notes.join(' · ')
 }
 
-const TEAM_DEPARTMENTS = new Map([
-  ['tuấn', 'MKT'],
-  ['toàn', 'Kế toán'],
-  ['trang', 'Sale'],
-  ['quốc anh', 'Vận hành'],
-  ['hưng', 'Vận hành']
-])
 const inferDepartmentFromPosition = position => {
   const value = String(position || '').trim().toLocaleLowerCase('vi')
   if (!value) return ''
@@ -182,8 +174,7 @@ const inferDepartmentFromPosition = position => {
 }
 const resolveDepartment = row => {
   const storedDepartment = String(row.department || '').trim()
-  const teamDepartment = TEAM_DEPARTMENTS.get(storedDepartment.toLocaleLowerCase('vi'))
-  return teamDepartment || inferDepartmentFromPosition(row.position) || storedDepartment || 'Chưa phân bộ phận'
+  return storedDepartment || inferDepartmentFromPosition(row.position) || 'Chưa phân bộ phận'
 }
 const getConsecutiveDepartmentRowSpans = rows => rows.map((row, index) => {
   const department = row.displayDepartment
@@ -207,12 +198,7 @@ const groupRowsByDepartment = rows => {
 
 function AttendancePreview() {
   const { user } = useAuth()
-  const companyId = useMemo(() => getCompanyIdForUser(user), [user])
-  const [companyInfo, setCompanyInfo] = useState(null)
-  const companyName = useMemo(
-    () => getCompanyNameForContext(companyInfo, user),
-    [companyInfo, user]
-  )
+  const { companyId, companyName } = useCompany()
   const [month, setMonth] = useState(currentMonthValue)
   const [summaryMonths, setSummaryMonths] = useState([])
   const [rows, setRows] = useState([])
@@ -241,18 +227,6 @@ function AttendancePreview() {
   const [excelPageSize, setExcelPageSize] = useState(EXCEL_DETAIL_PAGE_SIZE)
   const [detailViewMode, setDetailViewMode] = useState('matrix')
   const canEditWorkdays = canManageAttendance(user)
-
-  useEffect(() => {
-    let active = true
-    setCompanyInfo(null)
-    getCompanyInfo(companyId).then(info => {
-      if (active) setCompanyInfo(info)
-    }).catch(error => {
-      console.warn('Không tải được tên công ty cho bảng công:', error)
-      if (active) setCompanyInfo(null)
-    })
-    return () => { active = false }
-  }, [companyId])
 
   const daysInSelectedMonth = useMemo(() => {
     const [y, m] = String(month || '').split('-').map(Number)
@@ -357,6 +331,7 @@ function AttendancePreview() {
     setGeneratedAt(snapshot.generatedAt || '')
     setSourceLogCount(Number(snapshot.sourceLogCount || 0))
     setHasSnapshot(true)
+    if (snapshot.policySnapshot) setAttendanceSettings(normalizeAttendanceShiftSettings(snapshot.policySnapshot))
     if (nextMonth) setMonth(nextMonth)
     return nextRows
   }, [])
@@ -667,19 +642,20 @@ function AttendancePreview() {
     setIsImportOpen(true)
   }
 
-  const saveMonthSummary = useCallback(async (targetMonth, { silent = false, apply = true } = {}) => {
+  const saveMonthSummary = useCallback(async (targetMonth, { silent = false, apply = true, preservePolicy = false } = {}) => {
     if (!/^\d{4}-\d{2}$/.test(targetMonth)) {
       throw new Error('Tháng không hợp lệ. Dùng định dạng YYYY-MM.')
     }
 
-    const [employeeData, logData, nextAdjustments, nextManuals, storedSettings] = await Promise.all([
+    const [employeeData, logData, nextAdjustments, nextManuals, storedSettings, previousSnapshot] = await Promise.all([
       fbGetEmployeesDirectory(companyId),
       fbGetAttendanceLogsByMonth(targetMonth, companyId),
       fbGet(`hr/attendanceAdjustments/${targetMonth}`, companyId),
       fbGet(`hr/manualWorkdays/${targetMonth}`, companyId),
-      fbGet('hr/attendanceSettings/default', companyId)
+      fbGet('hr/attendanceSettings/default', companyId),
+      preservePolicy ? fbGet(`hr/attendanceMonthSummaries/${targetMonth}`, companyId) : Promise.resolve(null)
     ])
-    const nextAttendanceSettings = normalizeAttendanceShiftSettings(storedSettings)
+    const nextAttendanceSettings = normalizeAttendanceShiftSettings(previousSnapshot?.policySnapshot || storedSettings)
     if (apply) {
       setAttendanceSettings(nextAttendanceSettings)
       setManualWorkdays(nextManuals || {})
@@ -705,6 +681,8 @@ function AttendancePreview() {
       companyId,
       companyName,
       generatedAt: new Date().toISOString(),
+      policyVersion: nextAttendanceSettings.policyVersion,
+      policySnapshot: nextAttendanceSettings,
       sourceLogCount: monthLogs.length,
       employeeCount: filteredSummaryRows.length,
       rows: serializeAttendanceSummaryRows(filteredSummaryRows)
@@ -728,6 +706,18 @@ function AttendancePreview() {
       alert(parsed.error)
       return
     }
+    if (attendanceSettings.manualOverridePriority === 'none') {
+      alert('Công ty hiện không cho phép chỉnh công tay.')
+      return
+    }
+    const existingRow = rows.find(row => String(row.employeeId) === String(employeeId))
+    const existingDay = existingRow?.days?.get?.(`${month}-${String(day).padStart(2, '0')}`)
+    if (attendanceSettings.manualOverridePriority === 'allowed' && parsed.value !== null &&
+      !existingDay?.manualOverride &&
+      Number(existingDay?.workdaysExact ?? existingDay?.workdays ?? 0) > 0) {
+      alert('Chỉ được chỉnh tay ngày chưa có công theo cấu hình công ty.')
+      return
+    }
 
     const employeeKey = String(employeeId)
     const savingKey = `${employeeKey}:${day}`
@@ -745,7 +735,7 @@ function AttendancePreview() {
         companyId
       )
       persisted = true
-      const snapshot = await saveMonthSummary(month, { silent: true })
+      const snapshot = await saveMonthSummary(month, { silent: true, preservePolicy: true })
       const refreshedRows = groupRowsByDepartment(hydrateAttendanceSummaryRows(snapshot.rows || []))
       const refreshedDetail = refreshedRows.find(row => String(row.employeeId) === employeeKey)
       if (refreshedDetail) setDetailRow(refreshedDetail)
@@ -1245,7 +1235,7 @@ function AttendancePreview() {
                         : '—'}
                     </td>
                     <td className={item.manualWorkday !== undefined ? 'manual-workday-cell is-manual' : 'manual-workday-cell'}>
-                      {canEditWorkdays ? (
+                      {canEditWorkdays && attendanceSettings.manualOverridePriority !== 'none' ? (
                         <ManualWorkdayInput
                           value={item.manualWorkday !== undefined ? item.manualWorkday : item.workdays}
                           isManual={item.manualWorkday !== undefined}
@@ -1389,10 +1379,10 @@ function AttendancePreview() {
                           return (
                             <td
                               key={d.dayStr}
-                              className={`matrix-cell ${isOff ? 'is-off' : ''} ${val === '1' ? 'is-work' : ''} ${isHoliday ? 'is-holiday' : ''} ${cell.isManual ? 'is-manual' : ''} ${canEditWorkdays ? 'is-editable' : ''}`}
+                              className={`matrix-cell ${isOff ? 'is-off' : ''} ${val === '1' ? 'is-work' : ''} ${isHoliday ? 'is-holiday' : ''} ${cell.isManual ? 'is-manual' : ''} ${canEditWorkdays && attendanceSettings.manualOverridePriority !== 'none' ? 'is-editable' : ''}`}
                               title={cell.formula || (isHoliday ? (cell.holidayName || d.holidayName || 'Ngày lễ') : undefined)}
                             >
-                              {canEditWorkdays ? (
+                              {canEditWorkdays && attendanceSettings.manualOverridePriority !== 'none' ? (
                                 <ManualWorkdayInput
                                   value={cell.isManual ? cell.manualWorkday : (cell.workdays !== '' ? cell.workdays : val)}
                                   isManual={cell.isManual}
@@ -1418,7 +1408,7 @@ function AttendancePreview() {
               </table>
               <div className="matrix-formula-legend">
                 <strong>Công thức công ngày:</strong>
-                <span>Có Vào/Ra → phút(Vào→Ra) ÷ {Number(attendanceSettings?.standardWorkMinutes) || STANDARD_WORK_MINUTES} (tối đa 1 công)</span>
+                <span>Có Vào/Ra → phút tính công ÷ {Number(attendanceSettings?.standardWorkMinutes) || STANDARD_WORK_MINUTES} × {attendanceSettings?.standardWorkUnit || 1} (tối đa {attendanceSettings?.maxWorkUnitPerDay || 1} công/ngày; ca chia buổi áp dụng trọng số riêng)</span>
                 <span>P1 = phép 1 công</span>
                 <span>Di chuột lên ô để xem cách tính chi tiết</span>
               </div>
