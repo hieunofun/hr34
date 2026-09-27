@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { getEmployeeResetPreview, resetCompanyEmployees } from './employee-reset.js'
+import { getEmployeeResetPreview, resetCompanyEmployees } from '../../api/employee-reset.js'
 
 const A = '00000000-0000-0000-0000-000000000023'
 const B = '00000000-0000-0000-0000-000000000022'
