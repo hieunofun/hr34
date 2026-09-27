@@ -4,6 +4,8 @@ import { supabase } from '../services/supabase'
 import { useAuth } from '../contexts/AuthContext'
 import { useCompany } from '../contexts/CompanyContext'
 import { formatDateDisplay, getEmployeeEmploymentStatus, mapAppToUser, mapUserToApp, parseFlexibleDate, runUsersMutationWithSchemaFallback, USERS_DIRECTORY_COLUMNS, getMissingUsersColumnFromError } from '../utils/helpers'
+import { normalizeImportedPhone, readEmployeeExcelRows } from '../utils/employeeExcelImport'
+import { getCompanyEmployeeResetPreview, resetCompanyEmployees } from '../services/companyEmployeeReset'
 
 const loadXlsx = () => import('xlsx')
 
@@ -84,6 +86,7 @@ function Employees() {
     const [isReadOnly, setIsReadOnly] = useState(false)
     const fileInputRef = useRef(null)
     const [isImportModalOpen, setIsImportModalOpen] = useState(false)
+    const [deletingAll, setDeletingAll] = useState(false)
 
     // Tab State
     const [activeTab, setActiveTab] = useState('list') // 'list' or 'history'
@@ -216,6 +219,43 @@ function Employees() {
         }
     }
 
+    const handleDeleteAll = async () => {
+        if (user?.role !== 'admin' || deletingAll) return
+        try {
+            setDeletingAll(true)
+            const { company, counts } = await getCompanyEmployeeResetPreview()
+            const total = counts.users + counts.nhan_su + counts.cham_cong
+                + counts.attendanceRecords + counts.penalties + counts.statusHistory
+            if (!total) {
+                alert('Công ty không còn hồ sơ nhân sự hoặc dữ liệu chấm công để xóa.')
+                return
+            }
+            const confirmation = prompt(
+                `XÓA TOÀN BỘ DỮ LIỆU NHÂN SỰ VÀ CHẤM CÔNG CỦA ${company.name}\n\n` +
+                `${counts.users} hồ sơ nhân viên, ${counts.nhan_su} bản ghi nhân sự, ` +
+                `${counts.cham_cong} dòng chấm công, ${counts.attendanceRecords} bản ghi chấm công liên quan, ` +
+                `${counts.penalties} dòng phạt chấm công ` +
+                `và ${counts.statusHistory} dòng lịch sử trạng thái sẽ bị xóa vĩnh viễn.\n` +
+                `${counts.adminAccounts} tài khoản Admin được giữ lại.\n\n` +
+                `Nhập chính xác mã công ty ${company.code} để tiếp tục:`
+            )
+            if (confirmation === null) return
+            if (confirmation.trim() !== company.code) {
+                alert('Mã công ty không khớp. Chưa xóa dữ liệu.')
+                return
+            }
+            if (!confirm(`Xác nhận lần cuối: xóa dữ liệu nhân sự và chấm công của ${company.name}?`)) return
+            const result = await resetCompanyEmployees(company.code, counts)
+            await loadEmployees()
+            alert(`Đã xóa dữ liệu nhân sự và chấm công. Giữ lại ${result.adminAccountsKept} tài khoản Admin.`)
+        } catch (error) {
+            await loadEmployees()
+            alert(`Không hoàn tất xóa dữ liệu: ${error.message}\nHãy tải lại trang và kiểm tra dữ liệu còn lại.`)
+        } finally {
+            setDeletingAll(false)
+        }
+    }
+
     const downloadTemplate = async () => {
         const XLSX = await loadXlsx()
         const ws = XLSX.utils.aoa_to_sheet([EMPLOYEE_EXCEL_HEADERS])
@@ -317,27 +357,7 @@ function Employees() {
         const file = event.target.files?.[0]
         if (!file) return
 
-        const XLSX = await loadXlsx()
-
-        const normalizeHeader = (str) => {
-            return String(str || '')
-                .toLowerCase()
-                .trim()
-                .normalize('NFD')
-                .replace(/[\u0300-\u036f]/g, '')
-                .replace(/đ/g, 'd')
-                .replace(/[^a-z0-9]/g, '_')
-                .replace(/_+/g, '_')
-                .replace(/^_|_$/g, '')
-        }
-
-        const rowHasValue = (row) =>
-            Array.isArray(row) && row.some(cell => String(cell ?? '').trim() !== '')
-
-        const sheetToRows = (sheet) =>
-            XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: false, raw: false })
-
-        const readWorkbook = async () => {
+        const readWorkbook = async (XLSX) => {
             const bytes = new Uint8Array(await file.arrayBuffer())
             const sniff = new TextDecoder('utf-8').decode(bytes.slice(0, 512))
             const fileName = (file.name || '').toLowerCase()
@@ -357,37 +377,9 @@ function Employees() {
 
         try {
             setLoading(true)
-            const workbook = await readWorkbook()
-            let rows = []
-            for (const name of workbook.SheetNames || []) {
-                const candidate = sheetToRows(workbook.Sheets[name]).filter(rowHasValue)
-                if (candidate.length > rows.length) rows = candidate
-            }
-
-            if (!rows.length) {
-                alert('Không đọc được dữ liệu trong file. Hãy dùng .xlsx hoặc file mẫu Mau_import_nhan_su.xlsx.')
-                setLoading(false)
-                return
-            }
-
-            const headerKeywords = ['ho_va_ten', 'ho_ten', 'ten_nhan_vien', 'chi_nhanh', 'email_ca_nhan', 'vi_tri', 'so_cccd', 'sdt', 'ma_nv', 'ma_nhan_vien']
-            let headerIdx = 0
-            for (let i = 0; i < Math.min(rows.length, 15); i++) {
-                const normalized = (rows[i] || []).map(h => normalizeHeader(h))
-                if (normalized.some(h => headerKeywords.some(k => h === k || h.includes(k)))) {
-                    headerIdx = i
-                    break
-                }
-            }
-
-            const headers = (rows[headerIdx] || []).map(h => normalizeHeader(h))
-            const dataRows = rows.slice(headerIdx + 1).filter(rowHasValue)
-
-            if (!dataRows.length) {
-                alert('File chỉ có tiêu đề, chưa có dòng nhân viên.')
-                setLoading(false)
-                return
-            }
+            const XLSX = await loadXlsx()
+            const workbook = await readWorkbook(XLSX)
+            const { headers, dataRows } = readEmployeeExcelRows(XLSX, workbook)
 
             console.log('📋 Headers detected:', headers)
             console.log('📊 Total data rows:', dataRows.length)
@@ -396,7 +388,7 @@ function Employees() {
 
             const DATE_HEADERS = new Set([
                 'ngay_thang_nam_sinh', 'ngay_sinh', 'dob', 'birth_date',
-                'ngay_vao_lam', 'ngay_bat_dau', 'ngay_len_chinh_thuc',
+                'ngay_vao_lam', 'ngay_bat_dau', 'ngay_bat_dau_di_lam', 'ngay_len_chinh_thuc',
                 'ngay_chinh_thuc', 'ngay_lam_chinh_thuc', 'ngay_cap'
             ])
 
@@ -461,33 +453,33 @@ function Employees() {
             const seenImportKeys = new Map()
 
             for (let i = 0; i < dataRows.length; i++) {
-                const row = dataRows[i]
-                const rowIndex = headerIdx + i + 2
+                const { displayRow, rawRow, rowNumber: rowIndex } = dataRows[i]
 
                 const rowObj = {}
                 headers.forEach((h, idx) => {
                     if (!h) return
-                    rowObj[h] = formatCell(row[idx], h)
+                    const isDate = DATE_HEADERS.has(h) || h.startsWith('ngay_')
+                    rowObj[h] = formatCell(isDate ? rawRow[idx] : displayRow[idx], h)
                 })
 
                 const payload = {
                     employeeId: pick(rowObj, 'ma_nhan_vien', 'ma_nv', 'employee_id'),
                     ho_va_ten: pick(rowObj, 'ho_va_ten', 'ho_ten', 'ten_nhan_vien', 'ten', 'name'),
                     email: pick(rowObj, 'email_ca_nhan', 'email'),
-                    sđt: pick(rowObj, 'sdt', 'so_dien_thoai', 'dien_thoai', 'phone'),
+                    sđt: normalizeImportedPhone(pick(rowObj, 'sdt', 'so_dien_thoai', 'dien_thoai', 'phone')),
                     username: pick(rowObj, 'ten_dang_nhap', 'username', 'user_name'),
                     role: pick(rowObj, 'vai_tro', 'role') || 'user',
                     chi_nhanh: pick(rowObj, 'chi_nhanh', 'branch'),
                     bo_phan: pick(rowObj, 'team', 'bo_phan', 'phong_ban', 'department'),
-                    vi_tri: pick(rowObj, 'vi_tri', 'chuc_vu', 'position'),
+                    vi_tri: pick(rowObj, 'vi_tri', 'vi_tri_cong_viec', 'chuc_vu', 'position'),
                     trang_thai: pick(rowObj, 'trang_thai', 'status'),
-                    tinh_trang: pick(rowObj, 'tinh_trang'),
+                    tinh_trang: pick(rowObj, 'tinh_trang', 'trang_thai_nhan_su'),
                     tinh_trang_hon_nhan: pick(rowObj, 'tinh_trang_hon_nhan', 'hon_nhan'),
                     ngay_sinh: pick(rowObj, 'ngay_thang_nam_sinh', 'ngay_sinh', 'dob', 'birth_date'),
-                    ngay_vao_lam: pick(rowObj, 'ngay_vao_lam', 'ngay_bat_dau'),
+                    ngay_vao_lam: pick(rowObj, 'ngay_vao_lam', 'ngay_bat_dau', 'ngay_bat_dau_di_lam'),
                     ngay_lam_chinh_thuc: pick(rowObj, 'ngay_len_chinh_thuc', 'ngay_chinh_thuc', 'ngay_lam_chinh_thuc'),
                     ca_lam_viec: pick(rowObj, 'ca_lam', 'ca_lam_viec', 'ca', 'shift'),
-                    cccd: pick(rowObj, 'so_cccd', 'cccd', 'cmnd'),
+                    cccd: pick(rowObj, 'so_cccd', 'so_cmnd', 'cccd', 'cmnd'),
                     ngay_cap: pick(rowObj, 'ngay_cap'),
                     noi_cap: pick(rowObj, 'noi_cap'),
                     dia_chi_thuong_tru: pick(rowObj, 'dia_chi_thuong_tru', 'thuong_tru', 'dia_chi', 'address'),
@@ -849,6 +841,8 @@ function Employees() {
         onDownloadTemplate={downloadTemplate}
         onImport={handleImportExcel}
         onDelete={handleDelete}
+        onDeleteAll={user?.role === 'admin' ? handleDeleteAll : null}
+        deletingAll={deletingAll}
         onResolveEmployee={resolveEmployee}
     />
 

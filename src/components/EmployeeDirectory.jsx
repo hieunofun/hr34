@@ -16,7 +16,7 @@ function EmployeeDirectory({
     filterDept, setFilterDept, filterStatus, setFilterStatus, filterContract, setFilterContract,
     filterShift = '', setFilterShift,
     selectedEmployee, setSelectedEmployee, isModalOpen, setIsModalOpen, isReadOnly, setIsReadOnly,
-    onReload, onExport, onDownloadTemplate, onImport, onDelete, onResolveEmployee
+    onReload, onExport, onDownloadTemplate, onImport, onDelete, onDeleteAll, deletingAll = false, onResolveEmployee
 }) {
     const importInputRef = useRef(null)
     const [openMenu, setOpenMenu] = useState(null)
@@ -93,6 +93,9 @@ function EmployeeDirectory({
                     <button className="btn" onClick={onExport}><i className="fas fa-file-excel"></i> Xuất Excel</button>
                     <button className="btn" onClick={() => importInputRef.current?.click()}><i className="fas fa-file-import"></i> Nhập Excel</button>
                     <input ref={importInputRef} className="employees-file-input" type="file" accept=".xlsx,.xls,.csv" onChange={onImport} />
+                    {onDeleteAll && <button className="btn btn-danger" onClick={onDeleteAll} disabled={deletingAll}>
+                        <i className="fas fa-trash"></i> {deletingAll ? 'Đang xóa...' : 'Xóa tất cả'}
+                    </button>}
                     <button className="btn btn-primary" onClick={() => openEmployee(null, false)}><i className="fas fa-plus"></i> Thêm nhân viên</button>
                 </div>
             </header>

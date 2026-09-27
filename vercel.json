@@ -2,6 +2,9 @@
   "functions": {
     "api/attendance-match.js": {
       "maxDuration": 60
+    },
+    "api/employee-reset.js": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
