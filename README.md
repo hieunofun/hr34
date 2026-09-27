@@ -20,7 +20,7 @@ Mặc định Vite chạy tại `http://localhost:3034`. Cấu hình
 ## Production trên Vercel
 
 Project HR dùng framework Vite, build `npm run build`, output `dist`. Đặt
-URL production chung là `https://appchamcong.vercel.app/login`. Source được
+URL production chung là `https://appchamcong-hr.vercel.app/login`. Source được
 đẩy lên `hieunofun/hr34` nhánh `main`; Vercel project `appchamcong` build từ Git.
 
 Đặt
