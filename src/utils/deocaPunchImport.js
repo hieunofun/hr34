@@ -54,8 +54,12 @@ export const parseDeocaPunchSheet = (rows = [], header = findDeocaPunchHeader(ro
     const lastName = String(row[columns.last_name] ?? '').trim()
     const employeeCode = String(row[columns.employee_code] ?? '').trim()
     const attendanceDate = parseAttendanceDate(row[columns.attendance_date])
-    if (!employeeCode || !attendanceDate) {
-      skipped.push(`Dòng ${rowIndex + 1}: thiếu ID hoặc ngày hợp lệ.`)
+    if (!employeeCode) {
+      skipped.push(`Dòng ${rowIndex + 1}: thiếu ID nhân viên.`)
+      continue
+    }
+    if (!attendanceDate) {
+      skipped.push(`Dòng ${rowIndex + 1}: ngày không hợp lệ.`)
       continue
     }
 

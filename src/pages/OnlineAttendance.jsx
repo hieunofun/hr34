@@ -4,6 +4,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { useCompany } from '../contexts/CompanyContext'
 import { supabase } from '../services/supabase'
 import { fbGet, fbUpdate, fbGetAttendanceByEmployee } from '../services/firebase'
+import { listAttendancePeriods } from '../services/attendancePeriods'
+import { attendanceMonthForDate, calendarAttendancePeriod, dateInAttendancePeriod } from '../utils/attendancePeriod'
 import { uploadToCloudinary, getCloudinaryConfig, saveCloudinaryConfig } from '../utils/cloudinary'
 import {
   applyCalculatedAttendanceTiming,
@@ -90,6 +92,7 @@ function OnlineAttendance() {
 
   // 5. Lịch sử chấm công (List) & Bộ lọc tháng
   const [historyLogs, setHistoryLogs] = useState([])
+  const [periods, setPeriods] = useState([])
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
@@ -116,22 +119,29 @@ function OnlineAttendance() {
     loadHistory()
   }, [loadHistory])
 
+  useEffect(() => {
+    listAttendancePeriods(companyId).then(setPeriods)
+      .catch(error => console.warn('Không tải được kỳ công:', error))
+  }, [companyId])
+
   // Danh sách các tháng có dữ liệu
   const availableMonths = useMemo(() => {
     const currentMonth = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
     const set = new Set([currentMonth])
     historyLogs.forEach(log => {
-      const ym = String(log.date || '').slice(0, 7)
+      const ym = attendanceMonthForDate(log.date, periods)
       if (/^\d{4}-\d{2}$/.test(ym)) set.add(ym)
     })
+    periods.forEach(period => set.add(period.month))
     return Array.from(set).sort().reverse()
-  }, [historyLogs])
+  }, [historyLogs, periods])
 
   // Lọc log theo tháng đã chọn
   const filteredLogs = useMemo(() => {
     if (!selectedMonth) return historyLogs
-    return historyLogs.filter(log => String(log.date || '').startsWith(selectedMonth))
-  }, [historyLogs, selectedMonth])
+    const period = periods.find(item => item.month === selectedMonth) || calendarAttendancePeriod(selectedMonth)
+    return historyLogs.filter(log => dateInAttendancePeriod(log.date, period))
+  }, [historyLogs, selectedMonth, periods])
 
   // Cập nhật đồng hồ mỗi giây
   useEffect(() => {

@@ -48,7 +48,11 @@ export const parseAttendanceDate = (dateRaw) => {
 
   const value = String(dateRaw).trim()
   if (!value) return null
-  if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10)
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+    const date = value.slice(0, 10)
+    const parsed = new Date(`${date}T00:00:00Z`)
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date ? date : null
+  }
 
   const match = value.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/)
   if (match) {

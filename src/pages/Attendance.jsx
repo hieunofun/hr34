@@ -30,6 +30,8 @@ import { calculateProgressiveTax, formatMoney, normalizeString } from '../utils/
 import { downloadAttendanceFromGoldenTemplate } from '../utils/attendanceExcel'
 import { prorateMonthlySalary } from '../utils/attendanceCalculations'
 import { normalizeAttendanceShiftSettings } from '../utils/attendanceShift'
+import { getAttendancePeriod } from '../services/attendancePeriods'
+import { attendancePeriodDates, calendarAttendancePeriod, dateInAttendancePeriod } from '../utils/attendancePeriod'
 
 let XLSX = null
 const ensureXlsx = async () => {
@@ -245,6 +247,7 @@ const applyMonthlyReportStyles = ({
   worksheet,
   rows,
   month,
+  periodDates,
   rowCount,
   columnCount,
   dayStartColumn,
@@ -266,7 +269,6 @@ const applyMonthlyReportStyles = ({
     'nhan su': 'D9D2E9'
   }
   const dayColors = ['B6D7A8', 'D9D2E9', 'FCE5CD', 'CFE2F3', 'FFF2CC', 'D9EAD3', 'F4CCCC']
-  const [year, monthNumber] = month.split('-').map(Number)
 
   for (let row = 2; row < rowCount; row++) {
     for (let column = 0; column < columnCount; column++) {
@@ -290,8 +292,8 @@ const applyMonthlyReportStyles = ({
           if (row === 3) background = 'D9EAD3'
           else if (row === 4) background = dayColors[(column - dayStartColumn) % dayColors.length]
           else {
-            const day = column - dayStartColumn + 1
-            const weekday = new Date(year, monthNumber - 1, day).getDay()
+            const date = periodDates[column - dayStartColumn]
+            const weekday = date ? new Date(`${date}T00:00:00`).getDay() : -1
             background = weekday === 0 ? 'F4CCCC' : 'F6B26B'
           }
         } else if (column <= 5) {
@@ -321,14 +323,9 @@ const applyMonthlyReportStyles = ({
           background = 'FFF2CC'
           bold = true
         } else if (isDayColumn) {
-          const day = column - dayStartColumn + 1
-          const date = `${month}-${String(day).padStart(2, '0')}`
+          const date = periodDates[column - dayStartColumn]
           const daySummary = summaryRow?.days.get(date)
-          const weekday = new Date(
-            Number(month.slice(0, 4)),
-            monthNumber - 1,
-            day
-          ).getDay()
+          const weekday = date ? new Date(`${date}T00:00:00`).getDay() : -1
           if (weekday === 0) background = 'FCE8E6'
           if (daySummary?.paidLeaveWorkdays > 0) background = 'D9EAD3'
           else if (daySummary?.unapprovedAbsence) {
@@ -373,10 +370,11 @@ export const appendAttendanceSummarySheet = (
   rows,
   month,
   optionRows = rows,
-  attendanceSettings = {}
+  attendanceSettings = {},
+  attendancePeriod = null
 ) => {
-  const [year, monthNumber] = month.split('-').map(Number)
-  const daysInMonth = new Date(year, monthNumber, 0).getDate()
+  const periodDates = attendancePeriodDates(attendancePeriod || calendarAttendancePeriod(month))
+  const daysInMonth = periodDates.length
   const dayStartColumn = 27
   const reportPolicy = normalizeAttendanceShiftSettings(attendanceSettings)
   const lateThreshold = reportPolicy.latePenaltyThresholdMinutes
@@ -409,18 +407,10 @@ export const appendAttendanceSummarySheet = (
     'Công làm việc online',
     'Công làm việc offline'
   ]
-  const dayHeaders = Array.from({ length: daysInMonth }, (_, index) => {
-    const day = index + 1
-    return `${String(day).padStart(2, '0')}/${String(monthNumber).padStart(2, '0')}`
-  })
-  const dayLabels = Array.from({ length: daysInMonth }, (_, index) =>
-    DAY_LABELS[new Date(year, monthNumber - 1, index + 1).getDay()]
-  )
+  const dayHeaders = periodDates.map(date => `${date.slice(8, 10)}/${date.slice(5, 7)}`)
+  const dayLabels = periodDates.map(date => DAY_LABELS[new Date(`${date}T00:00:00`).getDay()])
   const dataRows = rows.map((row, index) => {
-    const dayValues = Array.from({ length: daysInMonth }, (_, dayIndex) => {
-      const date = `${month}-${String(dayIndex + 1).padStart(2, '0')}`
-      return dayValueForReport(row.days.get(date))
-    })
+    const dayValues = periodDates.map(date => dayValueForReport(row.days.get(date)))
 
     return [
       index + 1,
@@ -588,6 +578,7 @@ export const appendAttendanceSummarySheet = (
     worksheet,
     rows,
     month,
+    periodDates,
     rowCount: dataRows.length + dataStartRow,
     columnCount: lastColumn + 1,
     dayStartColumn,
@@ -685,6 +676,7 @@ function Attendance() {
   const [attendanceAdjustments, setAttendanceAdjustments] = useState({})
   const [manualWorkdays, setManualWorkdays] = useState({}) // New State for Manual Overrides
   const [filterAttendanceMonth, setFilterAttendanceMonth] = useState(currentMonthValue)
+  const [attendancePeriod, setAttendancePeriod] = useState(null)
   const [filterAttendanceEmployee, setFilterAttendanceEmployee] = useState('')
   const [filterAttendanceEmployeeKey, setFilterAttendanceEmployeeKey] = useState('')
   const [logsLoading, setLogsLoading] = useState(false)
@@ -718,6 +710,9 @@ function Attendance() {
     () => buildRecentMonthOptions(filterAttendanceMonth),
     [filterAttendanceMonth]
   )
+  const activeAttendancePeriod = attendancePeriod || calendarAttendancePeriod(filterAttendanceMonth)
+  const attendancePeriodDays = useMemo(() => attendancePeriodDates(activeAttendancePeriod),
+    [activeAttendancePeriod.startDate, activeAttendancePeriod.endDate])
 
   const employeesById = useMemo(
     () => new Map(employees.map(employee => [String(employee.id), employee])),
@@ -841,10 +836,11 @@ function Attendance() {
         attendanceLogs,
         filterAttendanceMonth,
         employees,
-        attendanceSettings
+        attendanceSettings,
+        activeAttendancePeriod
       )
     },
-    [attendanceLogs, attendanceSettings, employees, filterAttendanceMonth, needsWorkdaySummary]
+    [attendanceLogs, attendanceSettings, employees, filterAttendanceMonth, needsWorkdaySummary, activeAttendancePeriod.startDate, activeAttendancePeriod.endDate]
   )
 
   const paidLeaveStatsByEmployee = useMemo(() => {
@@ -855,7 +851,7 @@ function Attendance() {
       if (!isPaidLeaveRequest(request)) return
       const leaveDates = listRequestLeaveDates(request)
       const belongsToMonth = leaveDates.length
-        ? leaveDates.some((date) => date.startsWith(filterAttendanceMonth))
+        ? leaveDates.some((date) => dateInAttendancePeriod(date, activeAttendancePeriod))
         : String(request.createdAt || '').startsWith(filterAttendanceMonth)
       if (!belongsToMonth) return
 
@@ -887,7 +883,7 @@ function Attendance() {
     })
 
     return stats
-  }, [approvalRequests, employees, employeesById, filterAttendanceMonth, needsWorkdaySummary])
+  }, [approvalRequests, employees, employeesById, filterAttendanceMonth, needsWorkdaySummary, activeAttendancePeriod.startDate, activeAttendancePeriod.endDate])
 
   const attendanceSummary = useMemo(
     () => {
@@ -898,7 +894,8 @@ function Attendance() {
       month: filterAttendanceMonth,
       attendanceAdjustments,
       manualWorkdays,
-      attendanceSettings
+      attendanceSettings,
+      attendancePeriod: activeAttendancePeriod
       })
       const rowsByEmployee = new Map(
         baseRows.map((row) => [String(row.employeeId), row])
@@ -948,7 +945,9 @@ function Attendance() {
       manualWorkdays,
       attendanceSettings,
       paidLeaveStatsByEmployee,
-      needsWorkdaySummary
+      needsWorkdaySummary,
+      activeAttendancePeriod.startDate,
+      activeAttendancePeriod.endDate
     ]
   )
 
@@ -973,13 +972,16 @@ function Attendance() {
     const month = String(targetMonth || '').trim() || currentMonthValue()
     setLogsLoading(true)
     try {
-      const [attendanceLogsData, adjustments, manuals] = await Promise.all([
-        fbGetAttendanceLogsByMonth(month),
+      const [storedPeriod, adjustments, manuals] = await Promise.all([
+        getAttendancePeriod(undefined, month),
         fbGet(`hr/attendanceAdjustments/${month}`),
         fbGet(`hr/manualWorkdays/${month}`)
       ])
+      const attendanceLogsData = await fbGetAttendanceLogsByMonth(month, undefined,
+        storedPeriod || calendarAttendancePeriod(month))
       if (filterMonthRef.current !== month) return
       setAttendanceLogs(mapAttendanceLogs(attendanceLogsData))
+      setAttendancePeriod(storedPeriod)
       setAttendanceAdjustments(adjustments || {})
       setManualWorkdays(manuals || {})
     } catch (error) {
@@ -1100,14 +1102,17 @@ function Attendance() {
       setLoading(false)
       initialLoadDoneRef.current = true
 
-      const [attendanceLogsData, adjustments, manuals] = await Promise.all([
-        fbGetAttendanceLogsByMonth(month),
+      const [storedPeriod, adjustments, manuals] = await Promise.all([
+        getAttendancePeriod(undefined, month),
         fbGet(`hr/attendanceAdjustments/${month}`),
         fbGet(`hr/manualWorkdays/${month}`)
       ])
+      const attendanceLogsData = await fbGetAttendanceLogsByMonth(month, undefined,
+        storedPeriod || calendarAttendancePeriod(month))
 
       if (filterMonthRef.current === month) {
         setAttendanceLogs(mapAttendanceLogs(attendanceLogsData))
+        setAttendancePeriod(storedPeriod)
         setAttendanceAdjustments(adjustments || {})
         setManualWorkdays(manuals || {})
       }
@@ -1547,7 +1552,8 @@ function Attendance() {
       month: filterAttendanceMonth,
       attendanceAdjustments,
       manualWorkdays,
-      attendanceSettings
+      attendanceSettings,
+      attendancePeriod: activeAttendancePeriod
     })
     const searchTerm = normalizeString(filterAttendanceEmployee)
     return baseRows.filter(row =>
@@ -1567,7 +1573,9 @@ function Attendance() {
     filterAttendanceEmployee,
     filterAttendanceEmployeeKey,
     filterAttendanceMonth,
-    manualWorkdays
+    manualWorkdays,
+    activeAttendancePeriod.startDate,
+    activeAttendancePeriod.endDate
   ])
 
   // Export Attendance Data to Excel
@@ -1583,6 +1591,7 @@ function Attendance() {
         rows,
         month: filterAttendanceMonth,
         attendanceSettings,
+        attendancePeriod: activeAttendancePeriod,
         fileName: `BANG_CONG_${filterAttendanceMonth}.xlsx`
       })
     } catch (error) {
@@ -1609,7 +1618,8 @@ function Attendance() {
       rows,
       filterAttendanceMonth,
       rows,
-      attendanceSettings
+      attendanceSettings,
+      activeAttendancePeriod
     )
     try {
       await downloadAttendanceWorkbook(
@@ -1635,13 +1645,21 @@ function Attendance() {
     setLoading(true)
     try {
       // 2. Tổng hợp theo nhân viên + ngày để không tính trùng khi một ngày có nhiều ca.
+      const payrollPeriod = await getAttendancePeriod(undefined, period)
+      if (!payrollPeriod) throw new Error('Kỳ công này chưa được xác nhận. Hãy nhập Excel và xác nhận kỳ trước khi tính lương.')
+      const [periodLogData, periodAdjustments, periodManuals] = await Promise.all([
+        fbGetAttendanceLogsByMonth(period, undefined, payrollPeriod),
+        fbGet(`hr/attendanceAdjustments/${period}`),
+        fbGet(`hr/manualWorkdays/${period}`)
+      ])
       const periodSummary = buildAttendanceSummary({
-        attendanceLogs,
+        attendanceLogs: mapAttendanceLogs(periodLogData),
         employees,
         month: period,
-        attendanceAdjustments,
-        manualWorkdays,
-        attendanceSettings
+        attendanceAdjustments: periodAdjustments || {},
+        manualWorkdays: periodManuals || {},
+        attendanceSettings,
+        attendancePeriod: payrollPeriod
       })
       const empWorkdays = Object.fromEntries(
         periodSummary.map(row => [row.employeeId, row.workdays])
@@ -2149,7 +2167,7 @@ function Attendance() {
             )}
           </div>
 
-          <h4 style={{ margin: '0 0 10px' }}>Chi tiết công theo ngày</h4>
+          <h4 style={{ margin: '0 0 10px' }}>Chi tiết công theo ngày · {activeAttendancePeriod.startDate} – {activeAttendancePeriod.endDate}</h4>
           <div style={{ padding: '0', overflowX: 'scroll', overflowY: 'auto', maxHeight: 'calc(100vh - 350px)', border: '1px solid #ddd', borderRadius: '4px' }}>
             {!filterAttendanceMonth ? (
               <div className="empty-state">Vui lòng chọn tháng để xem bảng công</div>
@@ -2160,13 +2178,9 @@ function Attendance() {
                     <th style={{ minWidth: '50px', position: 'sticky', top: 0, left: 0, background: '#fff', zIndex: 20 }}>STT</th>
                     <th style={{ minWidth: '150px', position: 'sticky', top: 0, left: '50px', background: '#fff', zIndex: 20 }}>Họ tên</th>
                     <th style={{ minWidth: '100px', position: 'sticky', top: 0, left: '200px', background: '#fff', zIndex: 20 }}>Có phép (Ngày)</th>
-                    {(() => {
-                      const [year, month] = filterAttendanceMonth.split('-').map(Number)
-                      const daysInMonth = new Date(year, month, 0).getDate()
-                      return Array.from({ length: daysInMonth }, (_, i) => i + 1).map(day => (
-                        <th key={day} style={{ width: '40px', textAlign: 'center', position: 'sticky', top: 0, background: '#f8f9fa', zIndex: 10 }}>{day}</th>
-                      ))
-                    })()}
+                    {attendancePeriodDays.map(date => (
+                      <th key={date} style={{ width: '40px', textAlign: 'center', position: 'sticky', top: 0, background: '#f8f9fa', zIndex: 10 }}>{date.slice(8, 10)}/{date.slice(5, 7)}</th>
+                    ))}
                     <th style={{ width: '60px', textAlign: 'center', background: '#e8f5e9', position: 'sticky', top: 0, right: 0, zIndex: 10 }}>Tổng</th>
                   </tr>
                 </thead>
@@ -2178,8 +2192,6 @@ function Attendance() {
                       return normalizeString(name).includes(normalizeString(filterAttendanceEmployee))
                     })
                     .map((emp, empIdx) => {
-                      const [year, month] = filterAttendanceMonth.split('-').map(Number)
-                      const daysInMonth = new Date(year, month, 0).getDate()
                       let totalWorkdays = 0
 
                       return (
@@ -2197,8 +2209,8 @@ function Attendance() {
                               style={{ fontSize: '0.8rem', textAlign: 'center' }}
                             />
                           </td>
-                          {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(day => {
-                            const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+                          {attendancePeriodDays.map(dateStr => {
+                            const day = Number(dateStr.slice(8, 10))
                             const daySummary = dailyAttendanceMap.get(`${emp.id}::${dateStr}`)
 
                             let cellContent = ''
@@ -2922,7 +2934,14 @@ function Attendance() {
         attendanceSettings={attendanceSettings}
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
-        onSave={loadData}
+        onSave={async result => {
+          if (result?.primaryMonth) setFilterAttendanceMonth(result.primaryMonth)
+          await loadData()
+        }}
+        onPeriodConfirmed={period => {
+          if (period.month === filterMonthRef.current) return loadMonthScopedData(period.month)
+          return Promise.resolve()
+        }}
       />
 
       <AttendanceModal

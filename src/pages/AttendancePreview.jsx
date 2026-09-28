@@ -21,6 +21,8 @@ import {
   STANDARD_WORK_MINUTES
 } from '../utils/attendanceCalculations'
 import { canManageAttendance } from '../utils/staffAccess'
+import { getAttendancePeriod } from '../services/attendancePeriods'
+import { attendanceDateForDay, attendancePeriodDates, calendarAttendancePeriod } from '../utils/attendancePeriod'
 import { openAttendancePrintWindow } from '../utils/attendancePdf'
 import './AttendancePreview.css'
 
@@ -200,6 +202,7 @@ function AttendancePreview() {
   const { user } = useAuth()
   const { companyId, companyName } = useCompany()
   const [month, setMonth] = useState(currentMonthValue)
+  const [attendancePeriod, setAttendancePeriod] = useState(null)
   const [summaryMonths, setSummaryMonths] = useState([])
   const [rows, setRows] = useState([])
   const [loadedCompanyId, setLoadedCompanyId] = useState('')
@@ -209,6 +212,7 @@ function AttendancePreview() {
   const [summarizing, setSummarizing] = useState(false)
   const [error, setError] = useState('')
   const [hasSnapshot, setHasSnapshot] = useState(false)
+  const [snapshotPeriod, setSnapshotPeriod] = useState(null)
   const [isImportOpen, setIsImportOpen] = useState(false)
   const [importEmployees, setImportEmployees] = useState([])
   const [importLogs, setImportLogs] = useState([])
@@ -227,24 +231,21 @@ function AttendancePreview() {
   const [excelPageSize, setExcelPageSize] = useState(EXCEL_DETAIL_PAGE_SIZE)
   const [detailViewMode, setDetailViewMode] = useState('matrix')
   const canEditWorkdays = canManageAttendance(user)
+  const activePeriod = attendancePeriod || calendarAttendancePeriod(month)
+  const periodDates = useMemo(() => attendancePeriodDates(activePeriod), [activePeriod.startDate, activePeriod.endDate])
 
-  const daysInSelectedMonth = useMemo(() => {
-    const [y, m] = String(month || '').split('-').map(Number)
-    if (!y || !m) return 31
-    return new Date(y, m, 0).getDate()
-  }, [month])
+  const daysInSelectedMonth = periodDates.length
 
   const monthDaysHeader = useMemo(() => {
-    const [y, m] = String(month || '').split('-').map(Number)
-    if (!y || !m) return []
     const days = []
     const dowShort = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']
-    for (let d = 1; d <= daysInSelectedMonth; d++) {
-      const date = new Date(y, m - 1, d)
-      const dayStr = String(d).padStart(2, '0')
-      const holiday = getAttendanceHoliday(`${month}-${dayStr}`, attendanceSettings)
+    for (const dateKey of periodDates) {
+      const date = new Date(`${dateKey}T00:00:00`)
+      const dayStr = dateKey.slice(8, 10)
+      const holiday = getAttendanceHoliday(dateKey, attendanceSettings)
       days.push({
-        day: d,
+        date: dateKey,
+        day: Number(dayStr),
         dayStr,
         dow: dowShort[date.getDay()],
         isSunday: date.getDay() === 0,
@@ -254,7 +255,7 @@ function AttendancePreview() {
       })
     }
     return days
-  }, [attendanceSettings, month, daysInSelectedMonth])
+  }, [attendanceSettings, periodDates])
 
   const matrixHolidayLegend = useMemo(
     () => monthDaysHeader.filter(day => day.isHoliday),
@@ -276,8 +277,7 @@ function AttendancePreview() {
     return filtered.map(r => {
       const dailyMap = {}
       let calcTotal = 0
-      monthDaysHeader.forEach(({ day, dayStr, isHoliday, holidayName }) => {
-        const dateKey = `${month}-${dayStr}`
+      monthDaysHeader.forEach(({ day, dayStr, date: dateKey, isHoliday, holidayName }) => {
         const dayObj = r.days?.get ? r.days.get(dateKey) : (r.days?.[dateKey] || null)
         const manualWorkday = manualWorkdays[String(r.employeeId)]?.[String(day)]
         let code = ''
@@ -294,7 +294,7 @@ function AttendancePreview() {
           holidayName: dayObj?.holidayName || holidayName || '',
           manualOverride: manualWorkday !== undefined && manualWorkday !== null && manualWorkday !== ''
         }, { standardMinutes, displayCode: code })
-        dailyMap[dayStr] = {
+        dailyMap[dateKey] = {
           code,
           formula,
           isHoliday: Boolean(dayObj?.isHoliday || isHoliday),
@@ -324,6 +324,7 @@ function AttendancePreview() {
       setGeneratedAt('')
       setSourceLogCount(0)
       setHasSnapshot(false)
+      setSnapshotPeriod(null)
       return []
     }
     const nextRows = groupRowsByDepartment(hydrateAttendanceSummaryRows(snapshot.rows))
@@ -331,6 +332,7 @@ function AttendancePreview() {
     setGeneratedAt(snapshot.generatedAt || '')
     setSourceLogCount(Number(snapshot.sourceLogCount || 0))
     setHasSnapshot(true)
+    setSnapshotPeriod(snapshot.attendancePeriod || null)
     if (snapshot.policySnapshot) setAttendanceSettings(normalizeAttendanceShiftSettings(snapshot.policySnapshot))
     if (nextMonth) setMonth(nextMonth)
     return nextRows
@@ -362,12 +364,14 @@ function AttendancePreview() {
     setLoading(true)
     setError('')
     try {
-      const [snapshot, storedSettings, storedManuals] = await Promise.all([
+      const [snapshot, storedSettings, storedManuals, storedPeriod] = await Promise.all([
         fbGet(`hr/attendanceMonthSummaries/${targetMonth}`, companyId),
         fbGet('hr/attendanceSettings/default', companyId),
         fbGet(`hr/manualWorkdays/${targetMonth}`, companyId),
+        getAttendancePeriod(companyId, targetMonth),
         loadConfirmations(targetMonth)
       ])
+      setAttendancePeriod(storedPeriod)
       setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
       setManualWorkdays(storedManuals || {})
       applySnapshot(snapshot, targetMonth)
@@ -409,17 +413,19 @@ function AttendancePreview() {
           : (nonEmptyIndex >= 0 ? nonEmptyIndex : (currentIndex >= 0 ? currentIndex : 0))
         const initialMonth = months[initialIndex] || current
         const initialSnapshot = snapshots[initialIndex] || null
-        const [resolvedSnapshot, storedSettings, storedManuals] = await Promise.all([
+        const [resolvedSnapshot, storedSettings, storedManuals, storedPeriod] = await Promise.all([
           initialSnapshot
             ? Promise.resolve(initialSnapshot)
             : fbGet(`hr/attendanceMonthSummaries/${initialMonth}`, companyId),
           fbGet('hr/attendanceSettings/default', companyId),
           fbGet(`hr/manualWorkdays/${initialMonth}`, companyId),
+          getAttendancePeriod(companyId, initialMonth),
           loadConfirmations(initialMonth)
         ])
         if (cancelled) return
         setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
         setManualWorkdays(storedManuals || {})
+        setAttendancePeriod(storedPeriod)
         setMonth(initialMonth)
         applySnapshot(resolvedSnapshot, initialMonth)
         setLoadedCompanyId(companyId)
@@ -453,10 +459,12 @@ function AttendancePreview() {
     setExcelPage(1)
     setExcelPageSize(EXCEL_DETAIL_PAGE_SIZE)
     try {
-      const [logsData, empData] = await Promise.all([
-        fbGetAttendanceLogsByMonth(targetMonth, companyId),
+      const [storedPeriod, empData] = await Promise.all([
+        getAttendancePeriod(companyId, targetMonth),
         fbGetEmployeesDirectory(companyId)
       ])
+      const logsData = await fbGetAttendanceLogsByMonth(targetMonth, companyId,
+        storedPeriod || calendarAttendancePeriod(targetMonth))
       const employeesById = new Map(
         (empData
           ? Object.entries(empData).map(([id, value]) => ({ ...value, id }))
@@ -647,14 +655,16 @@ function AttendancePreview() {
       throw new Error('Tháng không hợp lệ. Dùng định dạng YYYY-MM.')
     }
 
-    const [employeeData, logData, nextAdjustments, nextManuals, storedSettings, previousSnapshot] = await Promise.all([
+    const [employeeData, storedPeriod, nextAdjustments, nextManuals, storedSettings, previousSnapshot] = await Promise.all([
       fbGetEmployeesDirectory(companyId),
-      fbGetAttendanceLogsByMonth(targetMonth, companyId),
+      getAttendancePeriod(companyId, targetMonth),
       fbGet(`hr/attendanceAdjustments/${targetMonth}`, companyId),
       fbGet(`hr/manualWorkdays/${targetMonth}`, companyId),
       fbGet('hr/attendanceSettings/default', companyId),
       preservePolicy ? fbGet(`hr/attendanceMonthSummaries/${targetMonth}`, companyId) : Promise.resolve(null)
     ])
+    const effectivePeriod = storedPeriod || calendarAttendancePeriod(targetMonth)
+    const logData = await fbGetAttendanceLogsByMonth(targetMonth, companyId, effectivePeriod)
     const nextAttendanceSettings = normalizeAttendanceShiftSettings(previousSnapshot?.policySnapshot || storedSettings)
     if (apply) {
       setAttendanceSettings(nextAttendanceSettings)
@@ -670,6 +680,7 @@ function AttendancePreview() {
       attendanceLogs: monthLogs,
       employees: employeeList,
       month: targetMonth,
+      attendancePeriod: effectivePeriod,
       attendanceAdjustments: nextAdjustments || {},
       manualWorkdays: nextManuals || {},
       attendanceSettings: nextAttendanceSettings
@@ -678,6 +689,7 @@ function AttendancePreview() {
     const filteredSummaryRows = summaryRows.filter(row => validEmpIds.has(String(row.employeeId)))
     const snapshot = {
       month: targetMonth,
+      attendancePeriod: effectivePeriod,
       companyId,
       companyName,
       generatedAt: new Date().toISOString(),
@@ -688,7 +700,10 @@ function AttendancePreview() {
       rows: serializeAttendanceSummaryRows(filteredSummaryRows)
     }
     await fbSet(`hr/attendanceMonthSummaries/${targetMonth}`, snapshot, companyId)
-    if (apply) applySnapshot(snapshot, targetMonth)
+    if (apply) {
+      setAttendancePeriod(storedPeriod)
+      applySnapshot(snapshot, targetMonth)
+    }
     setSummaryMonths(prev => {
       const next = new Set(prev)
       next.add(targetMonth)
@@ -699,6 +714,17 @@ function AttendancePreview() {
     }
     return snapshot
   }, [applySnapshot, companyId, companyName])
+
+  useEffect(() => {
+    if (loadedCompanyId !== companyId || !hasSnapshot || !attendancePeriod) return
+    if (snapshotPeriod?.startDate === attendancePeriod.startDate &&
+      snapshotPeriod?.endDate === attendancePeriod.endDate) return
+    saveMonthSummary(month, { silent: true }).catch(requestError => {
+      console.error('Không cập nhật được bảng công theo kỳ mới:', requestError)
+      setError('Kỳ công đã thay đổi; chưa cập nhật được bảng tổng hợp. Hãy bấm Tổng hợp lại.')
+    })
+  }, [attendancePeriod?.startDate, attendancePeriod?.endDate, companyId, hasSnapshot,
+    loadedCompanyId, month, saveMonthSummary, snapshotPeriod?.startDate, snapshotPeriod?.endDate])
 
   const handleSaveManualWorkday = async (employeeId, day, rawValue) => {
     const parsed = parseManualWorkdayInput(rawValue)
@@ -711,7 +737,12 @@ function AttendancePreview() {
       return
     }
     const existingRow = rows.find(row => String(row.employeeId) === String(employeeId))
-    const existingDay = existingRow?.days?.get?.(`${month}-${String(day).padStart(2, '0')}`)
+    const manualDate = attendanceDateForDay(activePeriod, day)
+    if (!manualDate) {
+      alert('Ngày không thuộc kỳ công hiện tại.')
+      return
+    }
+    const existingDay = existingRow?.days?.get?.(manualDate)
     if (attendanceSettings.manualOverridePriority === 'allowed' && parsed.value !== null &&
       !existingDay?.manualOverride &&
       Number(existingDay?.workdaysExact ?? existingDay?.workdays ?? 0) > 0) {
@@ -742,7 +773,7 @@ function AttendancePreview() {
       setManualNotice(
         parsed.value === null
           ? 'Đã bỏ chỉnh tay và khôi phục số công tự động.'
-          : `Đã lưu ${parsed.value} công cho ngày ${String(day).padStart(2, '0')}/${month}.`
+          : `Đã lưu ${parsed.value} công cho ngày ${manualDate}.`
       )
     } catch (requestError) {
       console.error('Không lưu được số công chỉnh tay:', requestError)
@@ -855,14 +886,12 @@ function AttendancePreview() {
 
   const departmentRowSpans = useMemo(() => getConsecutiveDepartmentRowSpans(rows), [rows])
   const calendar = useMemo(() => {
-    const [year, monthNumber] = String(month || '').split('-').map(Number)
-    const daysInMonth = year && monthNumber ? new Date(year, monthNumber, 0).getDate() : 31
-    return Array.from({ length: 31 }, (_, index) => {
-      const day = index + 1
-      const weekday = day <= daysInMonth ? ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][new Date(year, monthNumber - 1, day).getDay()] : ''
-      return { day, weekday }
-    })
-  }, [month])
+    return periodDates.map((date, index) => ({
+      day: index + 1,
+      date,
+      weekday: ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][new Date(`${date}T00:00:00`).getDay()]
+    }))
+  }, [periodDates])
   const weeklyPeople = useMemo(() => {
     const weekRanges = [1, 8, 15, 22, 29].map((start, index) => ({
       label: `Tuần ${index + 1}`,
@@ -883,7 +912,7 @@ function AttendancePreview() {
             .filter(([, predicate]) =>
               Array.from(
                 { length: Math.max(0, week.end - week.start + 1) },
-                (_, offset) => row.days.get(`${month}-${String(week.start + offset).padStart(2, '0')}`)
+                (_, offset) => row.days.get(calendar[week.start + offset - 1]?.date)
               ).some(predicate)
             )
             .map(([label]) => label)
@@ -899,15 +928,13 @@ function AttendancePreview() {
         }
       })
       .filter(Boolean)
-  }, [calendar.length, month, rows])
+  }, [calendar, rows])
   const weekLabels = useMemo(
     () => [1, 2, 3, 4, 5].map(index => `Tuần ${index}`),
     []
   )
   const detailDays = useMemo(() => {
     if (!detailRow || !month) return []
-    const [year, monthNumber] = String(month).split('-').map(Number)
-    const daysInMonth = year && monthNumber ? new Date(year, monthNumber, 0).getDate() : 0
     const fallbackShift = resolveAttendanceShift(
       {
         shift: detailRow.shift,
@@ -921,9 +948,8 @@ function AttendancePreview() {
     const fallbackStandardIn = formatAttendanceTime(fallbackShift?.start || fallbackShift?.standardCheckIn)
     const fallbackStandardOut = formatAttendanceTime(fallbackShift?.end || fallbackShift?.standardCheckOut)
 
-    return Array.from({ length: daysInMonth }, (_, index) => {
-      const day = index + 1
-      const date = `${month}-${String(day).padStart(2, '0')}`
+    return periodDates.map(date => {
+      const day = Number(date.slice(8, 10))
       const dayData = detailRow.days?.get?.(date) || null
       const log = dayData?.logs?.[0] || {}
       const checkIn = formatAttendanceTime(
@@ -941,7 +967,7 @@ function AttendancePreview() {
       return {
         day,
         date,
-        weekday: weekdayText(month, day),
+        weekday: ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][new Date(`${date}T00:00:00`).getDay()],
         code: dayCode(dayData),
         workdays: dayData?.workdays ?? '',
         manualWorkday: manualWorkdays[String(detailRow.employeeId)]?.[String(day)],
@@ -955,7 +981,7 @@ function AttendancePreview() {
         hasData: Boolean(dayData)
       }
     })
-  }, [attendanceSettings, detailRow, manualWorkdays, month])
+  }, [attendanceSettings, detailRow, manualWorkdays, month, periodDates])
   const detailStandardLabel = useMemo(() => {
     if (!detailDays.length) return ''
     const sample = detailDays.find(item => item.standardCheckIn && item.standardCheckOut) || detailDays[0]
@@ -970,6 +996,7 @@ function AttendancePreview() {
     <header>
       <div>
         <h1>Bảng công {month}</h1>
+        <p className="attendance-company-context">Kỳ công: <strong>{activePeriod.startDate} – {activePeriod.endDate}</strong>{!attendancePeriod ? ' (tháng dương lịch, chưa xác nhận)' : ''}</p>
         <p className="attendance-company-context">Công ty: <strong>{companyName}</strong></p>
         <p>
           {hasSnapshot
@@ -1162,6 +1189,10 @@ function AttendancePreview() {
         isOpen={isImportOpen}
         onClose={() => setIsImportOpen(false)}
         onSave={handleImportComplete}
+        onPeriodConfirmed={period => saveMonthSummary(period.month, {
+          silent: true,
+          apply: period.month === month
+        })}
         employees={importEmployees}
         attendanceLogs={importLogs}
         attendanceSettings={attendanceSettings}
@@ -1323,8 +1354,8 @@ function AttendancePreview() {
                 <div className="matrix-holiday-legend">
                   <strong>Ngày lễ tháng này:</strong>
                   {matrixHolidayLegend.map(day => (
-                    <span key={day.dayStr}>
-                      {day.dayStr}/{String(month).slice(5)}
+                    <span key={day.date}>
+                      {day.date.slice(8, 10)}/{day.date.slice(5, 7)}
                       {day.holidayName ? ` · ${day.holidayName}` : ''}
                     </span>
                   ))}
@@ -1346,11 +1377,11 @@ function AttendancePreview() {
                   <tr className="matrix-days-row">
                     {monthDaysHeader.map(d => (
                       <th
-                        key={d.dayStr}
+                        key={d.date}
                         className={`day-col ${d.isSunday ? 'is-sunday' : ''} ${d.isSaturday ? 'is-saturday' : ''} ${d.isHoliday ? 'is-holiday' : ''}`}
                         title={d.isHoliday ? (d.holidayName ? `Ngày lễ: ${d.holidayName}` : 'Ngày lễ') : undefined}
                       >
-                        <div className="day-number">{d.dayStr}</div>
+                        <div className="day-number">{d.dayStr}/{d.date.slice(5, 7)}</div>
                         <div className="day-dow">{d.isHoliday ? 'Lễ' : d.dow}</div>
                       </th>
                     ))}
@@ -1372,13 +1403,13 @@ function AttendancePreview() {
                         <td className="col-company">{companyName}</td>
                         <td className="col-pos">{emp.position || '-'}</td>
                         {monthDaysHeader.map(d => {
-                          const cell = emp.dailyMap[d.dayStr] || {}
+                          const cell = emp.dailyMap[d.date] || {}
                           const val = cell.code || ''
                           const isOff = val === '0' || (d.isSunday && !val)
                           const isHoliday = Boolean(cell.isHoliday || d.isHoliday)
                           return (
                             <td
-                              key={d.dayStr}
+                              key={d.date}
                               className={`matrix-cell ${isOff ? 'is-off' : ''} ${val === '1' ? 'is-work' : ''} ${isHoliday ? 'is-holiday' : ''} ${cell.isManual ? 'is-manual' : ''} ${canEditWorkdays && attendanceSettings.manualOverridePriority !== 'none' ? 'is-editable' : ''}`}
                               title={cell.formula || (isHoliday ? (cell.holidayName || d.holidayName || 'Ngày lễ') : undefined)}
                             >
@@ -1388,7 +1419,7 @@ function AttendancePreview() {
                                   isManual={cell.isManual}
                                   disabled={manualSavingKey === `${String(emp.employeeId)}:${d.day}`}
                                   employeeName={emp.name}
-                                  date={`${month}-${d.dayStr}`}
+                                  date={d.date}
                                   onSave={value => handleSaveManualWorkday(emp.employeeId, d.day, value)}
                                 />
                               ) : (

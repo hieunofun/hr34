@@ -31,6 +31,17 @@ import {
   STANDARD_WORK_MINUTES
 } from '../utils/attendanceCalculations'
 import { requireTenantCompanyId } from '../services/tenantSession'
+import { useAuth } from '../contexts/AuthContext'
+import { isCoreStaffUser } from '../utils/staffAccess'
+import { confirmAttendancePeriod, getAttendancePeriod, listAttendancePeriods } from '../services/attendancePeriods'
+import {
+  countAttendancePeriodLogs,
+  dateInAttendancePeriod,
+  isValidAttendanceDate,
+  resolveMatrixAttendanceDates,
+  suggestAttendancePeriod,
+  validateAttendancePeriod
+} from '../utils/attendancePeriod'
 
 const { read, utils, writeFile } = XLSX
 
@@ -41,10 +52,12 @@ function AttendanceImportModal({
   isOpen,
   onClose,
   onSave,
+  onPeriodConfirmed,
   companyId,
   companyName
 }) {
   const { companyId: sessionCompanyId } = useCompany()
+  const { user } = useAuth()
   const activeCompanyId = requireTenantCompanyId(companyId || sessionCompanyId)
   const [file, setFile] = useState(null)
   const [referenceImage, setReferenceImage] = useState(null)
@@ -54,6 +67,9 @@ function AttendanceImportModal({
   const [aiAvailable, setAiAvailable] = useState(null)
   const [previewData, setPreviewData] = useState(null)
   const [importMonth, setImportMonth] = useState(new Date().toISOString().slice(0, 7)) // YYYY-MM
+  const [periodDraft, setPeriodDraft] = useState(null)
+  const [periodConfirmed, setPeriodConfirmed] = useState(false)
+  const [savedPeriods, setSavedPeriods] = useState([])
   const [matchBranch, setMatchBranch] = useState('HCM')
 
   const availableBranches = useMemo(
@@ -108,6 +124,9 @@ function AttendanceImportModal({
 
   const handleFileChange = (e) => {
     setFile(e.target.files[0])
+    setPreviewData(null)
+    setPeriodDraft(null)
+    setPeriodConfirmed(false)
   }
 
   const parseTime = parseAttendanceTime
@@ -381,7 +400,14 @@ function AttendanceImportModal({
       const empName = nameIdx >= 0 ? row[nameIdx] : ''
       const machineName = machineNameIdx >= 0 ? row[machineNameIdx] : ''
       const dateRaw = dateIdx >= 0 ? row[dateIdx] : ''
-      if ((!empCode && !empName) || (dateRaw === '' || dateRaw == null)) continue
+      if (!empCode && !empName) continue
+      if (dateRaw === '' || dateRaw == null) {
+        const hasWorkData = [...punchColumns.allIndexes, congIdx, gioIdx]
+          .filter(index => Number.isInteger(index) && index >= 0)
+          .some(index => row[index] !== '' && row[index] != null)
+        if (hasWorkData) skipped.push(`Dòng ${i + 1}: ngày không hợp lệ (trống)`)
+        continue
+      }
 
       const sysEmp = attachSourceIdentity(
         findEmployee(empCode, empName) || buildFallbackEmployee(empCode, empName, i),
@@ -390,7 +416,10 @@ function AttendanceImportModal({
       )
 
       const dateStr = parseDateValue(dateRaw)
-      if (!dateStr) continue
+      if (!dateStr) {
+        skipped.push(`Dòng ${i + 1}: ngày không hợp lệ (${dateRaw})`)
+        continue
+      }
 
       const rowContext = {
         department: deptIdx >= 0 ? String(row[deptIdx] || '') : '',
@@ -556,13 +585,17 @@ function AttendanceImportModal({
       const dateRaw = dateIdx >= 0 ? row[dateIdx] : ''
 
       if (!empCode && !empName) continue
-      if (!dateRaw && dateRaw !== 0) continue
 
       const times = []
       lanIndexes.forEach(idx => {
         const parsed = parseTime(row[idx])
         if (parsed) times.push(parsed.str)
       })
+
+      if (!dateRaw && dateRaw !== 0) {
+        if (times.length) skipped.push(`Dòng ${i + 1}: ngày không hợp lệ (trống)`)
+        continue
+      }
 
       // Row without any punch times = skip (not absent day unless needed)
       if (times.length === 0) continue
@@ -638,6 +671,13 @@ function AttendanceImportModal({
       month = month || m
     }
 
+    const resolvedDateCols = resolveMatrixAttendanceDates(
+      dateCols,
+      `${year}-${String(month).padStart(2, '0')}`
+    )
+    const skipped = resolvedDateCols.filter(column => !column.valid)
+      .map(column => `Ngày không hợp lệ trong cột Excel: ${column.date}`)
+
     const policy = normalizeAttendanceShiftSettings(attendanceSettings)
     // Check if sheet contains hours worked (values >= 2.5) or standard workdays (công <= 1.0)
     let countOver2_5 = 0
@@ -678,9 +718,10 @@ function AttendanceImportModal({
         empName
       )
 
-      dateCols.forEach(({ day, idx }) => {
+      resolvedDateCols.forEach(({ day, idx, date, valid }) => {
         const cellContent = row[idx]
         if (cellContent === undefined || cellContent === null || String(cellContent).trim() === '') return
+        if (!valid) return
 
         const cellStr = String(cellContent).trim()
         const extractedTimes = []
@@ -692,11 +733,11 @@ function AttendanceImportModal({
           if (parsed) extractedTimes.push(parsed.str)
         }
 
-        const key = `${currentSysEmp.id}_${day}`
+        const key = `${currentSysEmp.id}_${date}`
 
         if (extractedTimes.length > 0) {
           if (!mergedData[key]) {
-            mergedData[key] = { emp: currentSysEmp, day, times: [], rawVal: cellStr, pos: empPos }
+            mergedData[key] = { emp: currentSysEmp, date, times: [], rawVal: cellStr, pos: empPos }
           }
           mergedData[key].times.push(...extractedTimes)
         } else {
@@ -743,7 +784,7 @@ function AttendanceImportModal({
           if (!mergedData[key]) {
             mergedData[key] = {
               emp: currentSysEmp,
-              day,
+              date,
               times: hours > 0 ? [policy.workStart, policy.workEnd] : [],
               rawVal: cellStr,
               directCong: cong,
@@ -759,11 +800,7 @@ function AttendanceImportModal({
 
     const logs = []
     Object.values(mergedData).forEach(item => {
-      const { emp, day, times } = item
-
-      const dateObj = new Date(year, month - 1, day)
-      if (dateObj.getMonth() !== month - 1) return
-      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+      const { emp, date: dateStr, times } = item
 
       if (item.isCodeOnly) {
         const directStats = {
@@ -798,7 +835,7 @@ function AttendanceImportModal({
       }))
     })
 
-    return { logs, skipped: [] }
+    return { logs, skipped }
   }
 
   const processListFormat = (jsonData, headers, headerRowIdx) => {
@@ -818,7 +855,13 @@ function AttendanceImportModal({
       const empCode = codeIdx >= 0 ? row[codeIdx] : ''
       const empName = nameIdx >= 0 ? row[nameIdx] : ''
       const dateRaw = dateIdx >= 0 ? row[dateIdx] : ''
-      if ((!empCode && !empName) || (!dateRaw && dateRaw !== 0)) continue
+      if (!empCode && !empName) continue
+      if (!dateRaw && dateRaw !== 0) {
+        if ([inIdx, outIdx, timeIdx].some(index => index >= 0 && row[index] !== '' && row[index] != null)) {
+          skipped.push(`Dòng ${i + 1}: ngày không hợp lệ (trống)`)
+        }
+        continue
+      }
 
       const key = `${empCode}_${empName}_${dateRaw}`
       if (!groupedData[key]) groupedData[key] = { empCode, empName, dateRaw, times: [] }
@@ -849,7 +892,10 @@ function AttendanceImportModal({
       )
 
       const dateStr = parseDateValue(group.dateRaw)
-      if (!dateStr) continue
+      if (!dateStr) {
+        skipped.push(`Ngày không hợp lệ (${group.dateRaw})`)
+        continue
+      }
 
       const stats = calculateStats(group.times, sysEmp)
       if (stats) {
@@ -1262,8 +1308,11 @@ function AttendanceImportModal({
 
         // Tự động nhận diện tháng/năm từ date serial trong hàng ngày, hoặc từ tiêu đề file/tên sheet
         let [year, month] = importMonth.split('-').map(Number)
-        if (bestDayCols[0]?.year) year = bestDayCols[0].year
-        if (bestDayCols[0]?.month) month = bestDayCols[0].month
+        const lastExplicitDate = bestDayCols.filter(column => column.year && column.month).at(-1)
+        if (lastExplicitDate) {
+          year = lastExplicitDate.year
+          month = lastExplicitDate.month
+        }
 
         const titleSources = [
           workbook.SheetNames[0],
@@ -1384,6 +1433,15 @@ function AttendanceImportModal({
         })
         const detectedImportMonth = Array.from(monthCounts.entries())
           .sort((left, right) => right[1] - left[1])[0]?.[0] || importMonth
+        const periods = await listAttendancePeriods(activeCompanyId)
+        const suggestion = suggestAttendancePeriod({
+          logs: result.logs,
+          existing: periods,
+          monthHint: importMonth || detectedImportMonth
+        })
+        setSavedPeriods(periods)
+        setPeriodDraft(suggestion)
+        setPeriodConfirmed(false)
         setImportMonth(detectedImportMonth)
         setPreviewData(
           prepareMatchingPreview(result.logs, {
@@ -1391,6 +1449,11 @@ function AttendanceImportModal({
             isMatrixMode: format === 'matrix',
             detectedDays,
             skipped: result.skipped,
+            invalidDateRows: [
+              ...result.skipped.filter(message => /ngày không hợp lệ|ngày hợp lệ/i.test(message)),
+              ...result.logs.filter(log => !isValidAttendanceDate(String(log.date || '')))
+                .map(log => `Ngày không hợp lệ: ${log.date}`)
+            ],
             isReconcileMode: false,
             importMonth: detectedImportMonth
           })
@@ -1405,9 +1468,47 @@ function AttendanceImportModal({
     }
   }
 
+  const handleConfirmPeriod = async () => {
+    if (!isCoreStaffUser(user)) {
+      alert('Chỉ Admin, Nhân sự hoặc Quản lý của công ty này được xác nhận kỳ công.')
+      return
+    }
+    try {
+      const valid = validateAttendancePeriod(periodDraft, savedPeriods)
+      const counts = countAttendancePeriodLogs(previewData.logs, valid)
+      if (!counts.inside) throw new Error('Kỳ công đã chọn không chứa bản ghi nào trong file.')
+      if (previewData.invalidDateRows?.length) throw new Error('File có ngày không hợp lệ; hãy sửa file trước khi nhập.')
+      setLoading(true)
+      const confirmed = await confirmAttendancePeriod(activeCompanyId, valid)
+      setPeriodDraft(confirmed)
+      setSavedPeriods(current => [...current.filter(item => item.month !== confirmed.month), confirmed])
+      setPeriodConfirmed(true)
+      if (onPeriodConfirmed) {
+        try {
+          await onPeriodConfirmed(confirmed)
+        } catch (summaryError) {
+          alert(`Kỳ công đã được lưu, nhưng chưa cập nhật được bảng tổng hợp: ${summaryError.message || summaryError}`)
+        }
+      }
+    } catch (error) {
+      alert(error.message || String(error))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const executeImport = async () => {
     if (!previewData?.logs || importInProgressRef.current) return
+    if (!previewData.isReconcileMode && !periodConfirmed) {
+      alert('Hãy xác nhận kỳ công trước khi nhập Excel.')
+      return
+    }
+    const selectedLogs = previewData.isReconcileMode
+      ? previewData.logs
+      : previewData.logs.filter(log => dateInAttendancePeriod(log.date, periodDraft))
+    const selectedSourceKeys = new Set(selectedLogs.map(log => log._sourceEmployeeKey))
     const unresolvedCount = previewData.matchGroups.filter(group =>
+      selectedSourceKeys.has(group.key) &&
       !group.selectedEmployeeId && group.status !== 'skipped'
     ).length
     if (unresolvedCount > 0) {
@@ -1420,7 +1521,7 @@ function AttendanceImportModal({
       .map(group => group.key))
     const configuredShiftNames = new Set(getAttendanceShiftOptions(attendanceSettings)
       .map(shift => String(shift.name || '').trim().toLocaleLowerCase('vi')))
-    const missingShifts = [...new Set(previewData.logs
+    const missingShifts = [...new Set(selectedLogs
       .filter(log => log.importFormat === 'deoca-punch' && !skippedSourceKeys.has(log._sourceEmployeeKey))
       .map(log => String(log.shiftName || '').trim())
       .filter(name => name && !configuredShiftNames.has(name.toLocaleLowerCase('vi'))))]
@@ -1432,10 +1533,17 @@ function AttendanceImportModal({
     importInProgressRef.current = true
     setLoading(true)
     try {
+      if (!previewData.isReconcileMode) {
+        const storedPeriod = await getAttendancePeriod(activeCompanyId, periodDraft.month)
+        if (!storedPeriod || storedPeriod.startDate !== periodDraft.startDate ||
+          storedPeriod.endDate !== periodDraft.endDate) {
+          throw new Error('Kỳ công đã thay đổi. Hãy xác nhận lại kỳ trước khi nhập.')
+        }
+      }
       const importPolicy = normalizeAttendanceShiftSettings(attendanceSettings)
       const importValuesAllowed = importPolicy.importPriorityMode !== 'raw_punch' ||
         importPolicy.workUnitCalculationMode === 'imported'
-      const preparedLogs = previewData.logs.map(log => {
+      const preparedLogs = selectedLogs.map(log => {
         if (skippedSourceKeys.has(log._sourceEmployeeKey)) return log
         const employee = employeesById.get(String(log.employeeId))
         if (!employee) throw new Error(`Không tìm thấy hồ sơ nhân viên đã ghép cho bản ghi ${log.date || ''}.`)
@@ -1490,8 +1598,12 @@ function AttendanceImportModal({
         skippedSourceKeys,
         reconcileMode: Boolean(previewData.isReconcileMode)
       })
-      const primaryMonth = previewData.importMonth || importMonth
-      const affectedMonths = [...new Set([...result.affectedMonths, primaryMonth])]
+      const primaryMonth = previewData.isReconcileMode
+        ? (previewData.importMonth || importMonth)
+        : periodDraft.month
+      const affectedMonths = previewData.isReconcileMode
+        ? [...new Set([...result.affectedMonths, primaryMonth])]
+        : [primaryMonth]
       await onSave({ primaryMonth, affectedMonths })
       onClose()
       setFile(null)
@@ -1581,21 +1693,32 @@ function AttendanceImportModal({
     setFile(null)
     setReferenceImage(null)
     setPreviewData(null)
+    setPeriodDraft(null)
+    setPeriodConfirmed(false)
     onClose()
   }
 
   if (!isOpen) return null
 
+  const previewSelectedLogs = previewData?.isReconcileMode
+    ? previewData.logs
+    : (previewData?.logs || []).filter(log => periodDraft && dateInAttendancePeriod(log.date, periodDraft))
+  const previewSourceKeys = new Set(previewSelectedLogs.map(log => log._sourceEmployeeKey))
+  const activeMatchGroups = (previewData?.matchGroups || []).filter(group => previewSourceKeys.has(group.key))
   const matchedEmployeeCount =
-    previewData?.matchGroups?.filter(
+    activeMatchGroups.filter(
       group => group.selectedEmployeeId && group.status !== 'skipped'
     ).length || 0
   const skippedEmployeeCount =
-    previewData?.matchGroups?.filter(group => group.status === 'skipped').length || 0
+    activeMatchGroups.filter(group => group.status === 'skipped').length || 0
   const unresolvedEmployeeCount =
-    (previewData?.matchGroups?.length || 0) -
+    activeMatchGroups.length -
     matchedEmployeeCount -
     skippedEmployeeCount
+  const previewDates = (previewData?.logs || []).map(log => String(log.date || '').slice(0, 10)).sort()
+  const periodCounts = periodDraft && previewData
+    ? countAttendancePeriodLogs(previewData.logs, periodDraft)
+    : { inside: 0, outside: 0 }
 
   return (
     <div className="modal show" onClick={handleClose}>
@@ -1707,8 +1830,9 @@ function AttendanceImportModal({
                 <li><strong>Chế độ:</strong> {previewData.modeLabel}</li>
                 <li><strong>Số nhân viên (không trùng):</strong> {previewData.uniqueEmployeeCount}</li>
                 <li><strong>Tổng số dòng chấm công:</strong> {previewData.count}</li>
+                {!previewData.isReconcileMode && <li><strong>Ngày tìm thấy trong Excel:</strong> {previewDates[0]} – {previewDates.at(-1)}</li>}
                 <li style={{ color: '#15803d' }}>
-                  <strong>Đã ghép với Lumi:</strong> {matchedEmployeeCount}
+                  <strong>Đã ghép với hồ sơ trong kỳ:</strong> {matchedEmployeeCount}
                 </li>
                 <li style={{ color: unresolvedEmployeeCount ? '#b91c1c' : '#15803d' }}>
                   <strong>Cần kiểm tra:</strong> {unresolvedEmployeeCount}
@@ -1735,6 +1859,34 @@ function AttendanceImportModal({
                   </li>
                 )}
               </ul>
+              {!previewData.isReconcileMode && periodDraft && (
+                <section style={{ padding: '14px', border: '1px solid #0f766e', borderRadius: 8, background: '#f0fdfa', marginBottom: 16 }}>
+                  <h4 style={{ marginTop: 0 }}>Xác nhận kỳ công</h4>
+                  <p>Kỳ đề xuất từ {periodDraft.source === 'saved' ? 'kỳ đã lưu' : periodDraft.source === 'previous' ? 'kỳ trước của công ty' : periodDraft.source === 'cross-month' ? 'dữ liệu qua hai tháng' : 'tháng dương lịch'}. Có thể sửa trước khi xác nhận.</p>
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                    <label>Tháng/năm kỳ công<br /><input type="month" value={periodDraft.month} onChange={event => {
+                      const month = event.target.value
+                      if (!month) return
+                      setPeriodDraft(suggestAttendancePeriod({ logs: previewData.logs, existing: savedPeriods, monthHint: month, forceMonth: true }))
+                      setPeriodConfirmed(false)
+                    }} /></label>
+                    <label>Bắt đầu<br /><input type="date" value={periodDraft.startDate} onChange={event => {
+                      setPeriodDraft(current => ({ ...current, startDate: event.target.value, source: 'manual' }))
+                      setPeriodConfirmed(false)
+                    }} /></label>
+                    <label>Kết thúc<br /><input type="date" value={periodDraft.endDate} onChange={event => {
+                      setPeriodDraft(current => ({ ...current, endDate: event.target.value, source: 'manual' }))
+                      setPeriodConfirmed(false)
+                    }} /></label>
+                  </div>
+                  <p>Trong kỳ: <strong>{periodCounts.inside}</strong> bản ghi · Ngoài kỳ: <strong>{periodCounts.outside}</strong> bản ghi. Bản ghi ngoài kỳ sẽ không được nhập lần này; ngày gốc của bản ghi trong kỳ được giữ nguyên.</p>
+                  {previewData.invalidDateRows?.length > 0 && <p style={{ color: '#b91c1c' }}>Có {previewData.invalidDateRows.length} dòng ngày không hợp lệ; cần sửa file trước khi nhập.</p>}
+                  <button type="button" className="btn btn-primary" onClick={handleConfirmPeriod}
+                    disabled={loading || !periodCounts.inside || Boolean(previewData.invalidDateRows?.length) || !isCoreStaffUser(user)}>
+                    {periodConfirmed ? 'Đã xác nhận kỳ công' : 'Xác nhận kỳ công'}
+                  </button>
+                </section>
+              )}
               <div
                 style={{
                   display: 'flex',
@@ -1795,7 +1947,7 @@ function AttendanceImportModal({
                     </tr>
                   </thead>
                   <tbody>
-                    {previewData.matchGroups.map(group => {
+                    {activeMatchGroups.map(group => {
                       const suggestedEmployee = employeesById.get(String(group.suggestedEmployeeId))
                       const selectedEmployee = employeesById.get(String(group.selectedEmployeeId))
                       const statusColor = group.status === 'skipped'
@@ -1930,7 +2082,7 @@ function AttendanceImportModal({
                   type="button"
                   className="btn btn-success"
                   onClick={executeImport}
-                  disabled={loading || unresolvedEmployeeCount > 0}
+                  disabled={loading || unresolvedEmployeeCount > 0 || (!previewData.isReconcileMode && !periodConfirmed)}
                   title={
                     unresolvedEmployeeCount > 0
                       ? 'Hãy ghép hoặc bỏ qua mọi nhân viên trước khi lưu vào công ty hiện tại'

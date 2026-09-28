@@ -381,13 +381,15 @@ export const fbGetAttendanceByEmployee = async (employeeId, companyId) => {
  * Ưu tiên log Excel/online trong hr_records; dùng cham_cong làm fallback
  * cho dữ liệu cũ chưa có log mềm.
  */
-export const fbGetAttendanceLogsByMonth = async (month, companyId) => {
+export const fbGetAttendanceLogsByMonth = async (month, companyId, attendancePeriod = null) => {
   companyId = requireCompanyId(companyId)
   const period = String(month || '').trim()
   if (!/^\d{4}-\d{2}$/.test(period)) return null
   const tenantId = requireCompanyId(companyId)
   const [year, monthNumber] = period.split('-').map(Number)
   const lastDay = String(new Date(year, monthNumber, 0).getDate()).padStart(2, '0')
+  const startDate = attendancePeriod?.startDate || `${period}-01`
+  const endDate = attendancePeriod?.endDate || `${period}-${lastDay}`
 
   // Ưu tiên log Excel/online trong hr_records. Bảng cham_cong có thể chỉ
   // chứa các dòng cũ thiếu giờ; nếu thấy dữ liệu ở đây thì dùng nó để tính
@@ -401,8 +403,8 @@ export const fbGetAttendanceLogsByMonth = async (month, companyId) => {
         .select('id, data')
         .eq('company_id', tenantId)
         .eq('collection', 'attendanceLogs')
-        .gte('data->>date', `${period}-01`)
-        .lte('data->>date', `${period}-${lastDay}`)
+        .gte('data->>date', startDate)
+        .lte('data->>date', endDate)
         .order('id', { ascending: true })
         .range(from, from + pageSize - 1)
       if (error) throw error
@@ -425,8 +427,8 @@ export const fbGetAttendanceLogsByMonth = async (month, companyId) => {
     let query = supabase
       .from('cham_cong')
       .select('*, nhan_su(id, ma_nhan_vien, ho_ten, chuc_vu, bo_phan, ca_lam)')
-      .gte('ngay', `${period}-01`)
-      .lte('ngay', `${period}-${lastDay}`)
+      .gte('ngay', startDate)
+      .lte('ngay', endDate)
     query = query.eq('company_id', tenantId)
     const { data: ccData, error: ccErr } = await query.order('ngay', { ascending: true })
 
@@ -474,8 +476,8 @@ export const fbGetAttendanceLogsByMonth = async (month, companyId) => {
       .select('id, data')
       .eq('company_id', tenantId)
       .eq('collection', 'attendanceLogs')
-      .gte('data->>date', `${period}-01`)
-      .lte('data->>date', `${period}-${lastDay}`)
+      .gte('data->>date', startDate)
+      .lte('data->>date', endDate)
       .order('id', { ascending: true })
       .range(from, from + pageSize - 1)
     if (error) throw error

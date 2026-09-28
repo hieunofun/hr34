@@ -1,5 +1,6 @@
 import { buildSourceEmployeeKey } from './attendanceMatching.js'
 import { departmentForAttendanceSummary } from './attendanceDepartment.js'
+import { attendanceDateForDay } from './attendancePeriod.js'
 import {
   applyCalculatedAttendanceTiming,
   attendanceTimeToMinutes,
@@ -292,7 +293,8 @@ export const buildDailyAttendanceMap = (
   attendanceLogs,
   month = '',
   employees = [],
-  attendanceSettings = {}
+  attendanceSettings = {},
+  attendancePeriod = null
 ) => {
   const grouped = new Map()
   const employeesById = new Map(
@@ -301,7 +303,9 @@ export const buildDailyAttendanceMap = (
 
   attendanceLogs.forEach(log => {
     const date = attendanceDateString(log)
-    if (!date || (month && !date.startsWith(month))) return
+    if (!date || (attendancePeriod
+      ? date < attendancePeriod.startDate || date > attendancePeriod.endDate
+      : month && !date.startsWith(month))) return
     const rawEmployeeId = String(log.employeeId || '')
     const employeeId = rawEmployeeId.startsWith('external:')
       ? `external:${buildSourceEmployeeKey(
@@ -321,7 +325,9 @@ export const buildDailyAttendanceMap = (
   const holidayDates = Array.from(new Set(
     (attendanceSettings.holidays || [])
       .map(item => typeof item === 'string' ? item.slice(0, 10) : String(item?.date || item?.day || '').slice(0, 10))
-      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date) && (!month || date.startsWith(month)))
+      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date) && (attendancePeriod
+        ? date >= attendancePeriod.startDate && date <= attendancePeriod.endDate
+        : !month || date.startsWith(month)))
   ))
   employees.forEach(employee => {
     const employeeId = String(employee?.id || '')
@@ -351,7 +357,8 @@ export const buildAttendanceSummary = ({
   month,
   attendanceAdjustments = {},
   manualWorkdays = {},
-  attendanceSettings = {}
+  attendanceSettings = {},
+  attendancePeriod = null
 }) => {
   if (!month) return []
   const policy = normalizeAttendanceShiftSettings(attendanceSettings)
@@ -363,7 +370,8 @@ export const buildAttendanceSummary = ({
     attendanceLogs,
     month,
     employees,
-    attendanceSettings
+    attendanceSettings,
+    attendancePeriod
   )
   const summaryByEmployee = new Map()
 
@@ -479,7 +487,9 @@ export const buildAttendanceSummary = ({
   const holidayDates = Array.from(new Set(
     (attendanceSettings.holidays || [])
       .map(item => typeof item === 'string' ? item.slice(0, 10) : String(item?.date || item?.day || '').slice(0, 10))
-      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date) && date.startsWith(month))
+      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date) && (attendancePeriod
+        ? date >= attendancePeriod.startDate && date <= attendancePeriod.endDate
+        : date.startsWith(month)))
   ))
   if (holidayDates.length > 0) {
     summaryByEmployee.forEach(row => {
@@ -524,7 +534,10 @@ export const buildAttendanceSummary = ({
       .filter(Number.isFinite)
 
     permissionDays.forEach(day => {
-      const date = `${month}-${String(day).padStart(2, '0')}`
+      const date = attendancePeriod
+        ? attendanceDateForDay(attendancePeriod, day)
+        : `${month}-${String(day).padStart(2, '0')}`
+      if (!date) return
       const current = row.days.get(date) || summarizeAttendanceDay(
         [],
         employee || {},
@@ -554,7 +567,10 @@ export const buildAttendanceSummary = ({
     Object.entries(overrides).forEach(([dayKey, rawValue]) => {
       const day = Number(dayKey)
       if (!Number.isFinite(day) || day < 1 || day > 31) return
-      const date = `${month}-${String(day).padStart(2, '0')}`
+      const date = attendancePeriod
+        ? attendanceDateForDay(attendancePeriod, day)
+        : `${month}-${String(day).padStart(2, '0')}`
+      if (!date) return
       const current = row.days.get(date) || summarizeAttendanceDay(
         [],
         employee || {},

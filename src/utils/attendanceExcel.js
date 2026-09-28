@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs'
 import { normalizeAttendancePolicy } from './attendanceShift.js'
+import { attendancePeriodDates, calendarAttendancePeriod } from './attendancePeriod.js'
 
 const TEMPLATE_URL = '/templates/attendance-report-template.xlsx'
 const SHEET_NAME = 'THÁNG 7'
@@ -126,7 +127,7 @@ const setFormula = (cell, formula, result = 0) => {
   cell.value = { formula, result }
 }
 
-const populateEmployee = (worksheet, rowNumber, row, index, month, daysInMonth, policy) => {
+const populateEmployee = (worksheet, rowNumber, row, index, dates, policy) => {
   clearEmployeeRow(worksheet, rowNumber)
   const penaltyAmount = key => Number(policy.penaltyRules.categories.find(item => item.key === key)?.amount || 0)
   const note = row.lateCount
@@ -173,34 +174,34 @@ const populateEmployee = (worksheet, rowNumber, row, index, month, daysInMonth, 
 
   for (let day = 1; day <= 31; day += 1) {
     const cell = worksheet.getCell(rowNumber, DAY_START_COLUMN + day - 1)
-    if (day > daysInMonth) {
+    if (day > dates.length) {
       cell.value = null
       continue
     }
-    const date = `${month}-${String(day).padStart(2, '0')}`
+    const date = dates[day - 1]
     cell.value = attendanceCodeForDay(row.days?.get(date))
   }
 }
 
-const populateHeader = (worksheet, month) => {
+const populateHeader = (worksheet, month, dates) => {
   const [year, monthNumber] = month.split('-').map(Number)
   if (!year || !monthNumber || monthNumber < 1 || monthNumber > 12) {
     throw new Error(`Tháng xuất báo cáo không hợp lệ: ${month}`)
   }
-  const daysInMonth = new Date(year, monthNumber, 0).getDate()
   worksheet.name = `THÁNG ${monthNumber}`
   worksheet.getCell('AJ2').value = `BẢNG CÔNG T${monthNumber}/${year}`
-  worksheet.getCell('AL4').value = `1/${monthNumber}/${year} - ${daysInMonth}/${monthNumber}/${year}`
+  worksheet.getCell('AL4').value = `${dates[0].slice(8, 10)}/${dates[0].slice(5, 7)}/${dates[0].slice(0, 4)} - ${dates.at(-1).slice(8, 10)}/${dates.at(-1).slice(5, 7)}/${dates.at(-1).slice(0, 4)}`
   for (let day = 1; day <= 31; day += 1) {
     const column = DAY_START_COLUMN + day - 1
-    const visible = day <= daysInMonth
+    const date = dates[day - 1]
+    const visible = Boolean(date)
     worksheet.getColumn(column).hidden = !visible
     worksheet.getCell(5, column).value = visible
-      ? ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][new Date(year, monthNumber - 1, day).getDay()]
+      ? ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][new Date(`${date}T00:00:00`).getDay()]
       : null
-    worksheet.getCell(6, column).value = visible ? day : null
+    worksheet.getCell(6, column).value = visible ? `${date.slice(8, 10)}/${date.slice(5, 7)}` : null
   }
-  return daysInMonth
+  return dates.length
 }
 
 const updateTotals = (worksheet, employeeCount) => {
@@ -216,12 +217,12 @@ const updateTotals = (worksheet, employeeCount) => {
   }
 }
 
-const eventNames = (rows, month, startDay, endDay, predicate) => {
+const eventNames = (rows, dates, startDay, endDay, predicate) => {
   const names = []
   rows.forEach(row => {
     let matched = false
     for (let day = startDay; day <= endDay; day += 1) {
-      const date = `${month}-${String(day).padStart(2, '0')}`
+      const date = dates[day - 1]
       if (predicate(row.days?.get(date))) {
         matched = true
         break
@@ -232,7 +233,7 @@ const eventNames = (rows, month, startDay, endDay, predicate) => {
   return names
 }
 
-const populateWeeklySummary = (worksheet, rows, month, summaryStartRow, daysInMonth) => {
+const populateWeeklySummary = (worksheet, rows, dates, summaryStartRow) => {
   const eventRows = [
     { offset: 1, label: 'Đi muộn', predicate: day => Boolean(day?.late) },
     { offset: 2, label: 'Kh chấm công', predicate: day => Boolean(day?.missingPunch) },
@@ -241,12 +242,12 @@ const populateWeeklySummary = (worksheet, rows, month, summaryStartRow, daysInMo
   ]
 
   WEEK_LAYOUTS.forEach((week, index) => {
-    const endDay = Math.min(week.endDay, daysInMonth)
+    const endDay = Math.min(week.endDay, dates.length)
     worksheet.getCell(`${week.label}${summaryStartRow}`).value = `Tuần ${index + 1}\n`
     eventRows.forEach(event => {
       const targetRow = summaryStartRow + event.offset
       const names = week.startDay <= endDay
-        ? eventNames(rows, month, week.startDay, endDay, event.predicate)
+        ? eventNames(rows, dates, week.startDay, endDay, event.predicate)
         : []
       worksheet.getCell(`${week.label}${targetRow}`).value = event.label
       worksheet.getCell(`${week.count}${targetRow}`).value = names.length || null
@@ -255,14 +256,15 @@ const populateWeeklySummary = (worksheet, rows, month, summaryStartRow, daysInMo
   })
 }
 
-export const buildAttendanceWorkbook = async (templateData, rows, month, attendanceSettings = {}) => {
+export const buildAttendanceWorkbook = async (templateData, rows, month, attendanceSettings = {}, attendancePeriod = null) => {
   const policy = normalizeAttendancePolicy(attendanceSettings)
   const workbook = new ExcelJS.Workbook()
   await workbook.xlsx.load(templateData)
   const worksheet = workbook.getWorksheet(SHEET_NAME) || workbook.worksheets[0]
   if (!worksheet) throw new Error('Golden template không có worksheet.')
 
-  const daysInMonth = populateHeader(worksheet, month)
+  const dates = attendancePeriodDates(attendancePeriod || calendarAttendancePeriod(month))
+  populateHeader(worksheet, month, dates)
   const summaryStartRow = resizeEmployeeRegion(worksheet, rows.length)
   rows.forEach((row, index) => {
     const targetRow = TEMPLATE_DATA_START_ROW + index
@@ -274,25 +276,24 @@ export const buildAttendanceWorkbook = async (templateData, rows, month, attenda
       targetRow,
       row,
       index,
-      month,
-      daysInMonth,
+      dates,
       policy
     )
   })
   updateTotals(worksheet, rows.length)
-  populateWeeklySummary(worksheet, rows, month, summaryStartRow, daysInMonth)
+  populateWeeklySummary(worksheet, rows, dates, summaryStartRow)
   workbook.calcProperties.fullCalcOnLoad = true
   workbook.calcProperties.forceFullCalc = true
   return workbook
 }
 
-export const downloadAttendanceFromGoldenTemplate = async ({ rows, month, fileName, attendanceSettings = {} }) => {
+export const downloadAttendanceFromGoldenTemplate = async ({ rows, month, fileName, attendanceSettings = {}, attendancePeriod = null }) => {
   const response = await fetch(TEMPLATE_URL)
   if (!response.ok) {
     throw new Error(`Không tải được golden template (${response.status}).`)
   }
   const templateData = await response.arrayBuffer()
-  const workbook = await buildAttendanceWorkbook(templateData, rows, month, attendanceSettings)
+  const workbook = await buildAttendanceWorkbook(templateData, rows, month, attendanceSettings, attendancePeriod)
   const output = await workbook.xlsx.writeBuffer()
   const blob = new Blob([output], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
