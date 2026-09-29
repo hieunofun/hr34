@@ -1,6 +1,7 @@
 import { supabase } from './supabase'
 import { requireTenantCompanyId } from './tenantSession'
 import { mapAppToUser, mapUserToApp } from '../utils/helpers'
+import { deleteAttendanceMonth } from './attendanceMonthDeletion.js'
 
 /**
  * Supabase-backed storage with the same API as the old Firebase helpers.
@@ -502,29 +503,8 @@ export const fbListCollectionIds = async (collection, companyId) => {
   )))
 }
 
-/** Delete the saved summary and its confirmations together, keeping source attendance data. */
-export const fbDeleteAttendanceMonthSummary = async (month, companyId) => {
-  companyId = requireCompanyId(companyId)
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
-    throw new Error('Tháng không hợp lệ. Dùng định dạng YYYY-MM.')
-  }
-
-  const collections = ['attendanceMonthSummaries', 'attendanceMonthConfirmations']
-  const ids = collections.flatMap(collection => [
-    scopedRowId(collection, month, companyId),
-    rowId(collection, month)
-  ])
-  const { data, error } = await supabase.from('hr_records')
-    .delete()
-    .eq('company_id', companyId)
-    .in('collection', collections)
-    .in('id', ids)
-    .select('id')
-  if (error) throw error
-  if (!data?.some(row => ids.slice(0, 2).includes(row.id))) {
-    throw new Error('Bảng công không còn tồn tại hoặc bạn không có quyền xóa. Vui lòng tải lại trang.')
-  }
-}
+export const fbDeleteAttendanceMonth = (month, companyId, expectedPeriod) =>
+  deleteAttendanceMonth({ db: supabase, companyId, month, expectedPeriod })
 
 export const fbSet = async (path, data, companyId) => {
   companyId = requireCompanyId(companyId)

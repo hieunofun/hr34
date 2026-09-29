@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useCompany } from '../contexts/CompanyContext'
-import { fbDeleteAttendanceMonthSummary, fbGet, fbGetAttendanceLogsByMonth, fbGetEmployeesDirectory, fbListCollectionIds, fbSet } from '../services/firebase'
+import { fbDeleteAttendanceMonth, fbGet, fbGetAttendanceLogsByMonth, fbGetEmployeesDirectory, fbListCollectionIds, fbSet } from '../services/firebase'
 import {
   buildAttendanceSummary,
   hydrateAttendanceSummaryRows,
@@ -848,26 +848,29 @@ function AttendancePreview() {
     }
   }
 
-  const handleDeleteSummary = async () => {
-    if (!canEditWorkdays || !hasSnapshot || isBusy || manualSavingKey || confirmSaving || excelLogsLoading) return
+  const handleDeleteMonth = async () => {
+    if (!canEditWorkdays || isBusy || manualSavingKey || confirmSaving || excelLogsLoading) return
     const targetMonth = month
     if (!confirm(
-      `Xóa bảng công tháng ${targetMonth} của công ty ${companyName}?\n\n` +
-      'Bảng tổng hợp và các dấu xác nhận của tháng này sẽ bị xóa. Dữ liệu chấm công gốc và số công chỉnh tay vẫn được giữ để tổng hợp lại.'
+      `Xóa toàn bộ bảng công tháng ${targetMonth} của công ty ${companyName}?\n` +
+      `Kỳ công: ${activePeriod.startDate} – ${activePeriod.endDate}.\n\n` +
+      'Dữ liệu chấm công, bảng tổng hợp, công chỉnh tay và dấu xác nhận của kỳ này sẽ bị xóa. Thao tác này không thể hoàn tác; bạn cần tải Excel lại để nhập dữ liệu mới.'
     )) return
 
     setDeleting(true)
     setError('')
     try {
-      await fbDeleteAttendanceMonthSummary(targetMonth, companyId)
+      await fbDeleteAttendanceMonth(targetMonth, companyId, activePeriod)
       applySnapshot(null)
       setConfirmations({})
+      setManualWorkdays({})
       setSummaryMonths(previous => previous.filter(value => value !== targetMonth))
       setDetailRow(null)
       setIsExcelDetailOpen(false)
       setExcelLogs([])
+      setImportLogs([])
       setManualNotice('')
-      alert(`Đã xóa bảng công tháng ${targetMonth}.`)
+      alert(`Đã xóa bảng công và dữ liệu chấm công của kỳ ${activePeriod.startDate} – ${activePeriod.endDate}. Bạn có thể tải Excel lại.`)
     } catch (requestError) {
       console.error('Xóa bảng công thất bại:', requestError)
       alert('Không thể xóa bảng công: ' + (requestError.message || requestError))
@@ -1095,13 +1098,13 @@ function AttendancePreview() {
             Tải PDF
           </button>
         )}
-        {hasSnapshot && canEditWorkdays && (
+        {canEditWorkdays && (
           <button
             type="button"
             className="attendance-preview-delete-btn"
-            onClick={handleDeleteSummary}
+            onClick={handleDeleteMonth}
             disabled={isBusy || Boolean(manualSavingKey) || confirmSaving || excelLogsLoading}
-            title={`Xóa bảng công đã lưu tháng ${month}`}
+            title={`Xóa toàn bộ dữ liệu bảng công kỳ ${activePeriod.startDate} – ${activePeriod.endDate}`}
           >
             <i className="fas fa-trash-alt" aria-hidden="true"></i>{' '}
             {deleting ? 'Đang xóa...' : 'Xóa bảng công'}
