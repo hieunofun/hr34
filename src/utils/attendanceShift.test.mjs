@@ -5,6 +5,7 @@ import {
   buildAttendanceShiftSettingsPayload,
   calculateAttendanceTiming,
   formatAttendanceTime,
+  findMissingAttendanceShifts,
   normalizeAttendanceShiftSettings,
   resolveAttendanceShift
 } from './attendanceShift.js'
@@ -143,6 +144,21 @@ test('preserves company shifts and uses the shift declared by each DEOCA row', (
   assert.equal(timing.shift.name, 'Ca 2')
   assert.equal(timing.lateMinutes, 13)
   assert.equal(timing.earlyMinutes, 12)
+})
+
+test('finds missing DEOCA shifts using the same name matching as timing', () => {
+  const settings = normalizeAttendanceShiftSettings({ shifts: {
+    custom_ca_1: { name: 'Ca 1', standardCheckIn: '06:00', standardCheckOut: '14:00' },
+    custom_ca_2: { name: 'Ca 2', standardCheckIn: '14:00', standardCheckOut: '22:00' }
+  } })
+  const logs = [
+    { importFormat: 'deoca-punch', shiftName: ' CA\u00a0 1 ', _sourceEmployeeKey: 'a' },
+    { importFormat: 'deoca-punch', shiftName: 'Ca02', _sourceEmployeeKey: 'b' },
+    { importFormat: 'deoca-punch', shiftName: 'Ca 3', _sourceEmployeeKey: 'c' }
+  ]
+  assert.deepEqual(findMissingAttendanceShifts(logs, settings), ['Ca 3'])
+  assert.deepEqual(findMissingAttendanceShifts(logs, settings, new Set(['c'])), [])
+  assert.equal(resolveAttendanceShift({}, logs[0], settings).start, '06:00')
 })
 
 test('split shift timing does not mark a morning-only checkout or afternoon-only checkin as missing a half-day', () => {

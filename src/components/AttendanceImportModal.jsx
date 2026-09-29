@@ -21,6 +21,7 @@ import { findDeocaPunchHeader, getDeocaShiftName, parseDeocaPunchSheet } from '.
 import {
   applyCalculatedAttendanceTiming,
   calculateAttendanceTiming,
+  findMissingAttendanceShifts,
   formatAttendanceTime,
   getAttendanceShiftOptions,
   normalizeAttendanceShiftSettings,
@@ -1519,20 +1520,19 @@ function AttendanceImportModal({
     const skippedSourceKeys = new Set(previewData.matchGroups
       .filter(group => group.status === 'skipped')
       .map(group => group.key))
-    const configuredShiftNames = new Set(getAttendanceShiftOptions(attendanceSettings)
-      .map(shift => String(shift.name || '').trim().toLocaleLowerCase('vi')))
-    const missingShifts = [...new Set(selectedLogs
-      .filter(log => log.importFormat === 'deoca-punch' && !skippedSourceKeys.has(log._sourceEmployeeKey))
-      .map(log => String(log.shiftName || '').trim())
-      .filter(name => name && !configuredShiftNames.has(name.toLocaleLowerCase('vi'))))]
-    if (missingShifts.length) {
-      alert(`Chưa có giờ chuẩn cho ${missingShifts.join(', ')}. Hãy thêm ca cùng tên trong Cài đặt → Cài đặt ca trước khi nhập để tính đúng đi muộn/về sớm.`)
-      return
-    }
-
     importInProgressRef.current = true
     setLoading(true)
     try {
+      const storedSettings = await fbGet('hr/attendanceSettings/default', activeCompanyId)
+      const importPolicy = normalizeAttendanceShiftSettings(storedSettings)
+      const missingShifts = findMissingAttendanceShifts(selectedLogs, importPolicy, skippedSourceKeys)
+      if (missingShifts.length) {
+        const savedShifts = getAttendanceShiftOptions(importPolicy)
+          .map(shift => shift.name)
+          .filter(Boolean)
+        alert(`Chưa có giờ chuẩn cho ${missingShifts.join(', ')} trong cài đặt đã lưu của công ty này. Ca đang lưu: ${savedShifts.join(', ') || 'không có'}. Hãy kiểm tra tên ca và bấm Lưu cài đặt trong Cài đặt → Cài đặt ca trước khi nhập.`)
+        return
+      }
       if (!previewData.isReconcileMode) {
         const storedPeriod = await getAttendancePeriod(activeCompanyId, periodDraft.month)
         if (!storedPeriod || storedPeriod.startDate !== periodDraft.startDate ||
@@ -1540,7 +1540,6 @@ function AttendanceImportModal({
           throw new Error('Kỳ công đã thay đổi. Hãy xác nhận lại kỳ trước khi nhập.')
         }
       }
-      const importPolicy = normalizeAttendanceShiftSettings(attendanceSettings)
       const importValuesAllowed = importPolicy.importPriorityMode !== 'raw_punch' ||
         importPolicy.workUnitCalculationMode === 'imported'
       const preparedLogs = selectedLogs.map(log => {
@@ -1554,24 +1553,35 @@ function AttendanceImportModal({
         if (['source-value', 'matrix-value'].includes(log.calculationMode) &&
           (importValuesAllowed || !hasRawPunch) &&
           (importPolicy.missingPunchPolicy !== 'manual_review' || !hasRawPunch)) return log
-        const shift = resolveAttendanceShift(employee, log, attendanceSettings)
+        const shift = resolveAttendanceShift(employee, log, importPolicy)
         const metrics = calculateAttendanceMetrics({
           log,
           checkIn: log.vao || log.checkIn,
           checkOut: log.ra || log.checkOut,
-          attendanceSettings,
+          attendanceSettings: importPolicy,
           punchPairs: log.punchPairs,
           splitShift: shift?.splitShift,
           shift,
-          standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
-          breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
-          autoCalculateOvertime: attendanceSettings?.overtime?.autoCalculate !== false,
+          standardMinutes: Number(importPolicy.standardWorkMinutes) || STANDARD_WORK_MINUTES,
+          breakMinutes: Number(importPolicy.unpaidBreakMinutes) || 0,
+          autoCalculateOvertime: importPolicy?.overtime?.autoCalculate !== false,
           fallbackHours: log.hours,
           fallbackWorkdays: log.cong
         })
-        const timed = applyCalculatedAttendanceTiming(log, employee, attendanceSettings)
+        const timed = applyCalculatedAttendanceTiming(log, employee, importPolicy)
+        const deocaStatus = log.importFormat === 'deoca-punch'
+          ? !formatAttendanceTime(log.ra || log.checkOut)
+            ? 'Thiếu ra'
+            : metrics.hours <= 0
+              ? 'Vắng/Nghỉ'
+              : [
+                  timed.lateMinutes > 0 ? `Muộn ${timed.lateMinutes}p` : '',
+                  timed.earlyMinutes > 0 ? `Sớm ${timed.earlyMinutes}p` : ''
+                ].filter(Boolean).join(' & ') || 'Đủ'
+          : null
         return {
           ...timed,
+          ...(deocaStatus ? { status: deocaStatus, kyHieu: deocaStatus } : {}),
           importedHours: log.importedHours ?? log.hours,
           importedWorkUnit: log.importedWorkUnit ?? log.cong,
           cong: metrics.regularWorkdays,

@@ -217,6 +217,7 @@ function AttendancePreview() {
   const [importEmployees, setImportEmployees] = useState([])
   const [importLogs, setImportLogs] = useState([])
   const [attendanceSettings, setAttendanceSettings] = useState(() => normalizeAttendanceShiftSettings())
+  const [importSettings, setImportSettings] = useState(() => normalizeAttendanceShiftSettings())
   const [manualWorkdays, setManualWorkdays] = useState({})
   const [manualSavingKey, setManualSavingKey] = useState('')
   const [manualNotice, setManualNotice] = useState('')
@@ -627,7 +628,7 @@ function AttendancePreview() {
         fbGet('hr/attendanceLogs', companyId),
         fbGet('hr/attendanceSettings/default', companyId)
       ])
-      setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
+      setImportSettings(normalizeAttendanceShiftSettings(storedSettings))
       if (empData) {
         setImportEmployees(
           Array.isArray(empData)
@@ -1195,7 +1196,7 @@ function AttendancePreview() {
         })}
         employees={importEmployees}
         attendanceLogs={importLogs}
-        attendanceSettings={attendanceSettings}
+        attendanceSettings={importSettings}
         companyId={companyId}
         companyName={companyName}
       />

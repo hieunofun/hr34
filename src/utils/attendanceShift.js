@@ -471,6 +471,22 @@ export const validateAttendancePolicy = (settings = {}) => {
 export const getAttendanceShiftOptions = settings =>
   Object.values(normalizeAttendanceShiftSettings(settings).shifts)
 
+export const normalizeAttendanceShiftName = value => {
+  const name = normalizeString(String(value || '').replace(/\s+/g, ' '))
+  const numberedShift = name.match(/^ca\s*0*(\d+)$/)
+  return numberedShift ? `ca ${Number(numberedShift[1])}` : name
+}
+
+export const findMissingAttendanceShifts = (logs, settings, skippedSourceKeys = new Set()) => {
+  const configuredNames = new Set(getAttendanceShiftOptions(settings)
+    .map(shift => normalizeAttendanceShiftName(shift.name)))
+  return [...new Set((logs || [])
+    .filter(log => log.importFormat === 'deoca-punch' &&
+      !skippedSourceKeys.has(log._sourceEmployeeKey))
+    .map(log => String(log.shiftName || '').trim().replace(/\s+/g, ' '))
+    .filter(name => name && !configuredNames.has(normalizeAttendanceShiftName(name))))]
+}
+
 export const buildAttendanceShiftSettingsPayload = settings => {
   const normalized = normalizeAttendanceShiftSettings(settings)
   return {
@@ -494,13 +510,13 @@ const shiftFromConfiguration = (shift, settings) => {
 }
 
 const configuredShiftFromName = (value, settings) => {
-  const normalizedName = normalizeString(value)
+  const normalizedName = normalizeAttendanceShiftName(value)
   if (!normalizedName) return null
   const configured = normalizeAttendanceShiftSettings(settings).shifts
 
   const exact = Object.values(configured).find(shift =>
-    normalizeString(shift.id) === normalizedName ||
-    normalizeString(shift.name) === normalizedName
+    normalizeAttendanceShiftName(shift.id) === normalizedName ||
+    normalizeAttendanceShiftName(shift.name) === normalizedName
   )
   if (exact) {
     return {
@@ -521,10 +537,10 @@ const configuredShiftFromName = (value, settings) => {
 }
 
 const exactShiftFromConfiguration = (value, settings) => {
-  const name = normalizeString(value)
+  const name = normalizeAttendanceShiftName(value)
   if (!name) return null
   const match = Object.values(normalizeAttendanceShiftSettings(settings).shifts).find(shift =>
-    normalizeString(shift.id) === name || normalizeString(shift.name) === name)
+    normalizeAttendanceShiftName(shift.id) === name || normalizeAttendanceShiftName(shift.name) === name)
   return match ? shiftFromConfiguration(match.id, settings) : null
 }
 
