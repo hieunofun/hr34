@@ -140,6 +140,24 @@
   background: #dcfce7;
 }
 
+.holiday-settings-alert.is-warning {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.holiday-settings-save-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.holiday-settings-save-row span {
+  color: #92400e;
+}
+
 .holiday-settings-shift-pills {
   display: flex;
   flex-wrap: wrap;

@@ -47,9 +47,11 @@ function HolidaySettings() {
     TABS.some(tab => tab.id === requestedTab) ? requestedTab : 'holidays'
   const setActiveTab = tab => setSearchParams(tab === 'holidays' ? {} : { tab })
   const [settings, setSettings] = useState(() => normalizeAttendanceShiftSettings())
+  const [savedSettings, setSavedSettings] = useState(null)
   const [penaltyCategories, setPenaltyCategories] = useState(() =>
     DEFAULT_PENALTY_CATEGORIES.map(item => ({ ...item }))
   )
+  const [savedPenaltyCategories, setSavedPenaltyCategories] = useState(null)
   const [selectedShiftId, setSelectedShiftId] = useState(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
   const [holidayDate, setHolidayDate] = useState('')
   const [holidayName, setHolidayName] = useState('')
@@ -57,15 +59,23 @@ function HolidaySettings() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const hasUnsavedChanges = savedSettings !== null && (
+    JSON.stringify(settings) !== JSON.stringify(savedSettings) ||
+    JSON.stringify(penaltyCategories) !== JSON.stringify(savedPenaltyCategories)
+  )
 
   const loadSettings = useCallback(async () => {
     setLoading(true)
     setError('')
+    setSavedSettings(null)
     try {
       const stored = await fbGet('hr/attendanceSettings/default', companyId)
       const nextSettings = normalizeAttendanceShiftSettings(stored)
+      const nextPenaltyCategories = normalizePenaltyCategories(stored?.penaltyRules?.categories || stored?.penaltyCategories)
       setSettings(nextSettings)
-      setPenaltyCategories(normalizePenaltyCategories(stored?.penaltyRules?.categories || stored?.penaltyCategories))
+      setSavedSettings(nextSettings)
+      setPenaltyCategories(nextPenaltyCategories)
+      setSavedPenaltyCategories(nextPenaltyCategories)
       setSelectedShiftId(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
     } catch (requestError) {
       setError(requestError.message || 'Không tải được cài đặt.')
@@ -329,9 +339,22 @@ function HolidaySettings() {
         ...payload,
         penaltyCategories: normalizedPenalties
       }, companyId)
-      setSettings(normalizeAttendanceShiftSettings(payload))
+      const storedAfterSave = await fbGet('hr/attendanceSettings/default', companyId)
+      const savedShifts = storedAfterSave?.shifts || {}
+      const allShiftsSaved = Object.entries(payload.shifts).every(([id, shift]) =>
+        savedShifts[id]?.name === shift.name &&
+        savedShifts[id]?.standardCheckIn === shift.standardCheckIn &&
+        savedShifts[id]?.standardCheckOut === shift.standardCheckOut
+      )
+      if (!allShiftsSaved) {
+        throw new Error('Ca chưa được lưu đầy đủ. Hãy thử lưu lại; các thay đổi vẫn còn trên màn hình.')
+      }
+      const verifiedSettings = normalizeAttendanceShiftSettings(storedAfterSave)
+      setSettings(verifiedSettings)
+      setSavedSettings(verifiedSettings)
       setPenaltyCategories(normalizedPenalties)
-      setNotice('Đã lưu cài đặt. Hãy tổng hợp lại Bảng Công nếu thay đổi ngày lễ hoặc ca.')
+      setSavedPenaltyCategories(normalizedPenalties)
+      setNotice('Đã lưu và kiểm tra lại cài đặt. Hãy tổng hợp lại Bảng Công nếu thay đổi ngày lễ hoặc ca.')
     } catch (requestError) {
       setError(requestError.message || 'Không lưu được cài đặt.')
     } finally {
@@ -372,7 +395,8 @@ function HolidaySettings() {
       </div>
 
       {activeTab !== 'leave' && error && <div className="holiday-settings-alert is-error">{error}</div>}
-      {activeTab !== 'leave' && notice && <div className="holiday-settings-alert is-success">{notice}</div>}
+      {activeTab !== 'leave' && hasUnsavedChanges && <div className="holiday-settings-alert is-warning">Có thay đổi chưa lưu. Bấm “Lưu cài đặt” trước khi rời trang.</div>}
+      {activeTab !== 'leave' && notice && !hasUnsavedChanges && <div className="holiday-settings-alert is-success">{notice}</div>}
 
       {activeTab === 'leave' && <LeaveSettingsPanel companyId={leaveCompanyId} />}
 
@@ -678,6 +702,13 @@ function HolidaySettings() {
                 />
                 Tự động tính tăng ca sau giờ kết thúc ca (HR có thể tắt để tự đánh dấu Excel)
               </label>
+              <div className="holiday-settings-save-row">
+                {hasUnsavedChanges && <span>Các thay đổi ca chưa được lưu.</span>}
+                <button type="button" className="btn btn-primary" onClick={saveSettings} disabled={saving}>
+                  <i className="fas fa-save"></i> {saving ? 'Đang lưu...' : 'Lưu cài đặt ca'}
+                </button>
+              </div>
+              {error && <div className="holiday-settings-alert is-error" role="alert">{error}</div>}
             </>
           )}
         </section>
