@@ -268,7 +268,8 @@ export const normalizeAttendancePolicy = (settings = {}) => {
       .map(([id, shift]) => [id, normalizeConfiguredShift(id, shift, {
         name: String(shift?.name || id),
         start: '',
-        end: ''
+        end: '',
+        standardWorkMinutes
       })])
   )
 
@@ -480,11 +481,14 @@ export const normalizeAttendanceShiftName = value => {
 export const findMissingAttendanceShifts = (logs, settings, skippedSourceKeys = new Set()) => {
   const configuredNames = new Set(getAttendanceShiftOptions(settings)
     .map(shift => normalizeAttendanceShiftName(shift.name)))
-  return [...new Set((logs || [])
-    .filter(log => log.importFormat === 'deoca-punch' &&
-      !skippedSourceKeys.has(log._sourceEmployeeKey))
-    .map(log => String(log.shiftName || '').trim().replace(/\s+/g, ' '))
-    .filter(name => name && !configuredNames.has(normalizeAttendanceShiftName(name))))]
+  const missingNames = new Map()
+  for (const log of logs || []) {
+    if (log.importFormat !== 'deoca-punch' || skippedSourceKeys.has(log._sourceEmployeeKey)) continue
+    const name = String(log.shiftName || '').trim().replace(/\s+/g, ' ')
+    const key = normalizeAttendanceShiftName(name)
+    if (key && !configuredNames.has(key) && !missingNames.has(key)) missingNames.set(key, name)
+  }
+  return [...missingNames.values()]
 }
 
 export const buildAttendanceShiftSettingsPayload = settings => {

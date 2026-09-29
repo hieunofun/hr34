@@ -7,7 +7,8 @@ import {
   formatAttendanceTime,
   findMissingAttendanceShifts,
   normalizeAttendanceShiftSettings,
-  resolveAttendanceShift
+  resolveAttendanceShift,
+  validateAttendancePolicy
 } from './attendanceShift.js'
 
 test('uses the normal morning shift for a non-Sale employee', () => {
@@ -154,11 +155,22 @@ test('finds missing DEOCA shifts using the same name matching as timing', () => 
   const logs = [
     { importFormat: 'deoca-punch', shiftName: ' CA\u00a0 1 ', _sourceEmployeeKey: 'a' },
     { importFormat: 'deoca-punch', shiftName: 'Ca02', _sourceEmployeeKey: 'b' },
-    { importFormat: 'deoca-punch', shiftName: 'Ca 3', _sourceEmployeeKey: 'c' }
+    { importFormat: 'deoca-punch', shiftName: 'Ca 3', _sourceEmployeeKey: 'c' },
+    { importFormat: 'deoca-punch', shiftName: 'ca03', _sourceEmployeeKey: 'd' }
   ]
   assert.deepEqual(findMissingAttendanceShifts(logs, settings), ['Ca 3'])
-  assert.deepEqual(findMissingAttendanceShifts(logs, settings, new Set(['c'])), [])
+  assert.deepEqual(findMissingAttendanceShifts(logs, settings, new Set(['c', 'd'])), [])
   assert.equal(resolveAttendanceShift({}, logs[0], settings).start, '06:00')
+})
+
+test('new custom shifts inherit a valid workday standard when only hours are entered', () => {
+  const settings = normalizeAttendanceShiftSettings({
+    shifts: {
+      custom_ca_1: { name: 'Ca 1', standardCheckIn: '06:00', standardCheckOut: '14:00' }
+    }
+  })
+  assert.equal(settings.shifts.custom_ca_1.standardWorkMinutes, settings.standardWorkMinutes)
+  assert.equal(validateAttendancePolicy(settings).isValid, true)
 })
 
 test('split shift timing does not mark a morning-only checkout or afternoon-only checkin as missing a half-day', () => {

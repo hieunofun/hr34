@@ -20,12 +20,16 @@ import {
 import { findDeocaPunchHeader, getDeocaShiftName, parseDeocaPunchSheet } from '../utils/deocaPunchImport'
 import {
   applyCalculatedAttendanceTiming,
+  attendanceTimeToMinutes,
+  buildAttendanceShiftSettingsPayload,
   calculateAttendanceTiming,
   findMissingAttendanceShifts,
   formatAttendanceTime,
   getAttendanceShiftOptions,
+  normalizeAttendanceShiftName,
   normalizeAttendanceShiftSettings,
-  resolveAttendanceShift
+  resolveAttendanceShift,
+  validateAttendancePolicy
 } from '../utils/attendanceShift'
 import {
   calculateAttendanceMetrics,
@@ -49,7 +53,7 @@ const { read, utils, writeFile } = XLSX
 function AttendanceImportModal({
   employees,
   attendanceLogs = [],
-  attendanceSettings = {},
+  attendanceSettings: initialAttendanceSettings = {},
   isOpen,
   onClose,
   onSave,
@@ -67,6 +71,9 @@ function AttendanceImportModal({
   const [aiLoading, setAiLoading] = useState(false)
   const [aiAvailable, setAiAvailable] = useState(null)
   const [previewData, setPreviewData] = useState(null)
+  const [attendanceSettings, setAttendanceSettings] = useState(() => normalizeAttendanceShiftSettings(initialAttendanceSettings))
+  const [missingShiftDrafts, setMissingShiftDrafts] = useState({})
+  const [shiftNotice, setShiftNotice] = useState('')
   const [importMonth, setImportMonth] = useState(new Date().toISOString().slice(0, 7)) // YYYY-MM
   const [periodDraft, setPeriodDraft] = useState(null)
   const [periodConfirmed, setPeriodConfirmed] = useState(false)
@@ -106,6 +113,10 @@ function AttendanceImportModal({
   }, [employees, matchBranch])
 
   useEffect(() => {
+    setAttendanceSettings(normalizeAttendanceShiftSettings(initialAttendanceSettings))
+  }, [initialAttendanceSettings])
+
+  useEffect(() => {
     if (!isOpen) return
     let cancelled = false
 
@@ -126,6 +137,7 @@ function AttendanceImportModal({
   const handleFileChange = (e) => {
     setFile(e.target.files[0])
     setPreviewData(null)
+    setShiftNotice('')
     setPeriodDraft(null)
     setPeriodConfirmed(false)
   }
@@ -1498,6 +1510,141 @@ function AttendanceImportModal({
     }
   }
 
+  const prepareLogWithPolicy = (log, employee, importPolicy) => {
+    if (log.syntheticPunch) return log
+    const hasRawPunch = Boolean(formatAttendanceTime(log.vao || log.checkIn) ||
+      formatAttendanceTime(log.ra || log.checkOut) ||
+      (Array.isArray(log.punchPairs) && log.punchPairs.length))
+    const importValuesAllowed = importPolicy.importPriorityMode !== 'raw_punch' ||
+      importPolicy.workUnitCalculationMode === 'imported'
+    if (['source-value', 'matrix-value'].includes(log.calculationMode) &&
+      (importValuesAllowed || !hasRawPunch) &&
+      (importPolicy.missingPunchPolicy !== 'manual_review' || !hasRawPunch)) return log
+    const shift = resolveAttendanceShift(employee, log, importPolicy)
+    const metrics = calculateAttendanceMetrics({
+      log,
+      checkIn: log.vao || log.checkIn,
+      checkOut: log.ra || log.checkOut,
+      attendanceSettings: importPolicy,
+      punchPairs: log.punchPairs,
+      splitShift: shift?.splitShift,
+      shift,
+      standardMinutes: Number(importPolicy.standardWorkMinutes) || STANDARD_WORK_MINUTES,
+      breakMinutes: Number(importPolicy.unpaidBreakMinutes) || 0,
+      autoCalculateOvertime: importPolicy?.overtime?.autoCalculate !== false,
+      fallbackHours: log.hours,
+      fallbackWorkdays: log.cong
+    })
+    const timed = applyCalculatedAttendanceTiming(log, employee, importPolicy)
+    const deocaStatus = log.importFormat === 'deoca-punch'
+      ? !formatAttendanceTime(log.ra || log.checkOut)
+        ? 'Thiếu ra'
+        : metrics.hours <= 0
+          ? 'Vắng/Nghỉ'
+          : [
+              timed.lateMinutes > 0 ? `Muộn ${timed.lateMinutes}p` : '',
+              timed.earlyMinutes > 0 ? `Sớm ${timed.earlyMinutes}p` : ''
+            ].filter(Boolean).join(' & ') || 'Đủ'
+      : null
+    return {
+      ...timed,
+      ...(deocaStatus ? { status: deocaStatus, kyHieu: deocaStatus } : {}),
+      importedHours: log.importedHours ?? log.hours,
+      importedWorkUnit: log.importedWorkUnit ?? log.cong,
+      cong: metrics.regularWorkdays,
+      hours: metrics.hours,
+      gio: metrics.hours,
+      tongGio: metrics.hours + (Number(log.gioPlus) || 0),
+      workedMinutes: metrics.workedMinutes,
+      regularMinutes: metrics.regularMinutes,
+      overtimeMinutes: metrics.overtimeMinutes,
+      overtimeHours: metrics.overtimeHours,
+      overtimeAutoDisabled: log.overtimeAutoDisabled !== undefined
+        ? Boolean(log.overtimeAutoDisabled)
+        : false,
+      calculationMode: metrics.calculationMode,
+      splitShiftBreakdown: metrics.splitShiftBreakdown
+    }
+  }
+
+  const saveMissingShifts = async () => {
+    if (!previewData?.logs || loading) return
+    if (!isCoreStaffUser(user)) {
+      alert('Chỉ Admin, Nhân sự hoặc Quản lý của công ty này được cài đặt giờ ca.')
+      return
+    }
+    const selectedLogs = previewData.isReconcileMode
+      ? previewData.logs
+      : previewData.logs.filter(log => periodDraft && dateInAttendancePeriod(log.date, periodDraft))
+    const skippedSourceKeys = new Set(previewData.matchGroups
+      .filter(group => group.status === 'skipped')
+      .map(group => group.key))
+    setLoading(true)
+    setShiftNotice('')
+    try {
+      const storedSettings = await fbGet('hr/attendanceSettings/default', activeCompanyId)
+      const currentSettings = normalizeAttendanceShiftSettings(storedSettings)
+      const missingNames = findMissingAttendanceShifts(selectedLogs, currentSettings, skippedSourceKeys)
+      let savedSettings = currentSettings
+      if (missingNames.length) {
+        const incomplete = missingNames.find(name => {
+          const draft = missingShiftDrafts[name] || {}
+          const start = attendanceTimeToMinutes(draft.start)
+          const end = attendanceTimeToMinutes(draft.end)
+          return start === null || end === null || start === end
+        })
+        if (incomplete) {
+          throw new Error(`Hãy nhập giờ vào và giờ ra chuẩn, khác nhau, cho ${incomplete}.`)
+        }
+        const newShifts = Object.fromEntries(missingNames.map((name, index) => {
+          const draft = missingShiftDrafts[name]
+          return [`custom_deoca_${Date.now()}_${index}`, {
+            name,
+            standardCheckIn: draft.start,
+            standardCheckOut: draft.end,
+            standardWorkMinutes: currentSettings.standardWorkMinutes,
+            unpaidBreakMinutes: 0,
+            allowOvernightShift: attendanceTimeToMinutes(draft.end) < attendanceTimeToMinutes(draft.start)
+          }]
+        }))
+        const nextSettings = {
+          ...currentSettings,
+          policyVersion: Number(currentSettings.policyVersion || 0) + 1,
+          shifts: { ...currentSettings.shifts, ...newShifts }
+        }
+        const validation = validateAttendancePolicy(nextSettings)
+        if (!validation.isValid) throw new Error(validation.error)
+        await fbUpdate('hr/attendanceSettings/default', buildAttendanceShiftSettingsPayload(nextSettings), activeCompanyId)
+        savedSettings = normalizeAttendanceShiftSettings(await fbGet('hr/attendanceSettings/default', activeCompanyId))
+        const stillMissing = findMissingAttendanceShifts(selectedLogs, savedSettings, skippedSourceKeys)
+        if (stillMissing.length) throw new Error(`Chưa đọc lại được giờ chuẩn cho ${stillMissing.join(', ')}. Hãy thử lưu lại.`)
+        const savedShifts = getAttendanceShiftOptions(savedSettings)
+        const incorrect = missingNames.find(name => {
+          const shift = savedShifts.find(item =>
+            normalizeAttendanceShiftName(item.name) === normalizeAttendanceShiftName(name))
+          return shift?.standardCheckIn !== missingShiftDrafts[name].start ||
+            shift?.standardCheckOut !== missingShiftDrafts[name].end
+        })
+        if (incorrect) throw new Error(`Giờ chuẩn của ${incorrect} chưa được lưu đúng. Hãy thử lại.`)
+      }
+      setAttendanceSettings(savedSettings)
+      setPreviewData(previous => previous ? {
+        ...previous,
+        logs: previous.logs.map(log => {
+          if (log.importFormat !== 'deoca-punch' || skippedSourceKeys.has(log._sourceEmployeeKey)) return log
+          const employee = employeesById.get(String(log.employeeId))
+          return employee ? prepareLogWithPolicy(log, employee, savedSettings) : log
+        })
+      } : previous)
+      setMissingShiftDrafts({})
+      setShiftNotice('Đã lưu giờ ca cho công ty và tính lại bảng xem trước.')
+    } catch (error) {
+      alert('Không lưu được giờ ca: ' + (error.message || String(error)))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const executeImport = async () => {
     if (!previewData?.logs || importInProgressRef.current) return
     if (!previewData.isReconcileMode && !periodConfirmed) {
@@ -1540,64 +1687,11 @@ function AttendanceImportModal({
           throw new Error('Kỳ công đã thay đổi. Hãy xác nhận lại kỳ trước khi nhập.')
         }
       }
-      const importValuesAllowed = importPolicy.importPriorityMode !== 'raw_punch' ||
-        importPolicy.workUnitCalculationMode === 'imported'
       const preparedLogs = selectedLogs.map(log => {
         if (skippedSourceKeys.has(log._sourceEmployeeKey)) return log
         const employee = employeesById.get(String(log.employeeId))
         if (!employee) throw new Error(`Không tìm thấy hồ sơ nhân viên đã ghép cho bản ghi ${log.date || ''}.`)
-        if (log.syntheticPunch) return log
-        const hasRawPunch = Boolean(formatAttendanceTime(log.vao || log.checkIn) ||
-          formatAttendanceTime(log.ra || log.checkOut) ||
-          (Array.isArray(log.punchPairs) && log.punchPairs.length))
-        if (['source-value', 'matrix-value'].includes(log.calculationMode) &&
-          (importValuesAllowed || !hasRawPunch) &&
-          (importPolicy.missingPunchPolicy !== 'manual_review' || !hasRawPunch)) return log
-        const shift = resolveAttendanceShift(employee, log, importPolicy)
-        const metrics = calculateAttendanceMetrics({
-          log,
-          checkIn: log.vao || log.checkIn,
-          checkOut: log.ra || log.checkOut,
-          attendanceSettings: importPolicy,
-          punchPairs: log.punchPairs,
-          splitShift: shift?.splitShift,
-          shift,
-          standardMinutes: Number(importPolicy.standardWorkMinutes) || STANDARD_WORK_MINUTES,
-          breakMinutes: Number(importPolicy.unpaidBreakMinutes) || 0,
-          autoCalculateOvertime: importPolicy?.overtime?.autoCalculate !== false,
-          fallbackHours: log.hours,
-          fallbackWorkdays: log.cong
-        })
-        const timed = applyCalculatedAttendanceTiming(log, employee, importPolicy)
-        const deocaStatus = log.importFormat === 'deoca-punch'
-          ? !formatAttendanceTime(log.ra || log.checkOut)
-            ? 'Thiếu ra'
-            : metrics.hours <= 0
-              ? 'Vắng/Nghỉ'
-              : [
-                  timed.lateMinutes > 0 ? `Muộn ${timed.lateMinutes}p` : '',
-                  timed.earlyMinutes > 0 ? `Sớm ${timed.earlyMinutes}p` : ''
-                ].filter(Boolean).join(' & ') || 'Đủ'
-          : null
-        return {
-          ...timed,
-          ...(deocaStatus ? { status: deocaStatus, kyHieu: deocaStatus } : {}),
-          importedHours: log.importedHours ?? log.hours,
-          importedWorkUnit: log.importedWorkUnit ?? log.cong,
-          cong: metrics.regularWorkdays,
-          hours: metrics.hours,
-          gio: metrics.hours,
-          tongGio: metrics.hours + (Number(log.gioPlus) || 0),
-          workedMinutes: metrics.workedMinutes,
-          regularMinutes: metrics.regularMinutes,
-          overtimeMinutes: metrics.overtimeMinutes,
-          overtimeHours: metrics.overtimeHours,
-          overtimeAutoDisabled: log.overtimeAutoDisabled !== undefined
-            ? Boolean(log.overtimeAutoDisabled)
-            : false,
-          calculationMode: metrics.calculationMode,
-          splitShiftBreakdown: metrics.splitShiftBreakdown
-        }
+        return prepareLogWithPolicy(log, employee, importPolicy)
       })
       const result = await commitAttendanceImport({
         supabase,
@@ -1703,6 +1797,7 @@ function AttendanceImportModal({
     setFile(null)
     setReferenceImage(null)
     setPreviewData(null)
+    setShiftNotice('')
     setPeriodDraft(null)
     setPeriodConfirmed(false)
     onClose()
@@ -1715,6 +1810,12 @@ function AttendanceImportModal({
     : (previewData?.logs || []).filter(log => periodDraft && dateInAttendancePeriod(log.date, periodDraft))
   const previewSourceKeys = new Set(previewSelectedLogs.map(log => log._sourceEmployeeKey))
   const activeMatchGroups = (previewData?.matchGroups || []).filter(group => previewSourceKeys.has(group.key))
+  const skippedPreviewSourceKeys = new Set(activeMatchGroups
+    .filter(group => group.status === 'skipped')
+    .map(group => group.key))
+  const previewMissingShifts = findMissingAttendanceShifts(
+    previewSelectedLogs, attendanceSettings, skippedPreviewSourceKeys
+  )
   const matchedEmployeeCount =
     activeMatchGroups.filter(
       group => group.selectedEmployeeId && group.status !== 'skipped'
@@ -1869,6 +1970,36 @@ function AttendanceImportModal({
                   </li>
                 )}
               </ul>
+              {previewMissingShifts.length > 0 && (
+                <section style={{ padding: 14, border: '1px solid #f59e0b', borderRadius: 8, background: '#fffbeb', marginBottom: 16 }}>
+                  <h4 style={{ marginTop: 0 }}>Nhập giờ chuẩn cho ca trong file</h4>
+                  <p>Các ca {previewMissingShifts.join(', ')} chưa có trong cài đặt đã lưu của {companyName || 'công ty này'}. Nhập giờ thực tế rồi lưu ngay tại đây.</p>
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    {previewMissingShifts.map(name => (
+                      <div key={name} style={{ display: 'flex', alignItems: 'end', flexWrap: 'wrap', gap: 10 }}>
+                        <strong style={{ minWidth: 65, paddingBottom: 10 }}>{name}</strong>
+                        <label>Giờ vào chuẩn
+                          <input type="time" value={missingShiftDrafts[name]?.start || ''} disabled={loading}
+                            onChange={event => setMissingShiftDrafts(current => ({ ...current,
+                              [name]: { ...(current[name] || {}), start: event.target.value }
+                            }))} />
+                        </label>
+                        <label>Giờ ra chuẩn
+                          <input type="time" value={missingShiftDrafts[name]?.end || ''} disabled={loading}
+                            onChange={event => setMissingShiftDrafts(current => ({ ...current,
+                              [name]: { ...(current[name] || {}), end: event.target.value }
+                            }))} />
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                  <p style={{ fontSize: '0.85rem', marginBottom: 8 }}>Chuẩn công mặc định: {attendanceSettings.standardWorkMinutes} phút/ca, nghỉ không tính: 0 phút. Có thể chỉnh riêng trong Cài đặt ca.</p>
+                  <button type="button" className="btn btn-primary" disabled={loading} onClick={saveMissingShifts}>
+                    {loading ? 'Đang lưu giờ ca...' : 'Lưu giờ ca và tính lại'}
+                  </button>
+                </section>
+              )}
+              {shiftNotice && <div className="alert alert-success" style={{ marginBottom: 16 }}>{shiftNotice}</div>}
               {!previewData.isReconcileMode && periodDraft && (
                 <section style={{ padding: '14px', border: '1px solid #0f766e', borderRadius: 8, background: '#f0fdfa', marginBottom: 16 }}>
                   <h4 style={{ marginTop: 0 }}>Xác nhận kỳ công</h4>
@@ -2092,9 +2223,11 @@ function AttendanceImportModal({
                   type="button"
                   className="btn btn-success"
                   onClick={executeImport}
-                  disabled={loading || unresolvedEmployeeCount > 0 || (!previewData.isReconcileMode && !periodConfirmed)}
+                  disabled={loading || previewMissingShifts.length > 0 || unresolvedEmployeeCount > 0 || (!previewData.isReconcileMode && !periodConfirmed)}
                   title={
-                    unresolvedEmployeeCount > 0
+                    previewMissingShifts.length > 0
+                      ? 'Hãy lưu giờ chuẩn cho các ca trong file trước khi import'
+                      : unresolvedEmployeeCount > 0
                       ? 'Hãy ghép hoặc bỏ qua mọi nhân viên trước khi lưu vào công ty hiện tại'
                       : ''
                   }
