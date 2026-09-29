@@ -535,7 +535,14 @@ function HolidaySettings() {
               {!Object.values(ATTENDANCE_SHIFT_IDS).includes(selectedShiftId) && (
                 <button type="button" className="btn" onClick={removeSelectedShift}>Xóa ca đang chọn</button>
               )}
-              <p className="holiday-settings-split-note">Với file DEOCA, hãy thêm ca trùng tên cuối đường dẫn “Bộ phận” (ví dụ Ca 1, Ca 2) và nhập giờ chuẩn thực tế. Hệ thống sẽ ghép ca theo tên đó.</p>
+              <p className="holiday-settings-split-note">
+                Với file DEOCA, Ca 1/Ca 2 là nhãn ở cuối đường dẫn “Bộ phận”. Nếu làm cùng giờ cả ngày, chọn dùng giờ Ca Hành chính khi nhập file. Chỉ thêm ca riêng khi giờ thực tế khác.
+                {Object.keys(settings.deocaShiftAliases || {}).length > 0 && (
+                  <><br />Đang dùng chung giờ: {Object.entries(settings.deocaShiftAliases)
+                    .map(([name, shiftId]) => `${name} → ${settings.shifts[shiftId]?.name || shiftId}`)
+                    .join(', ')}.</>
+                )}
+              </p>
 
               <div className="holiday-settings-grid">
                 <label>
