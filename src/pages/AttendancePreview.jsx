@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useCompany } from '../contexts/CompanyContext'
-import { fbGet, fbGetAttendanceLogsByMonth, fbGetEmployeesDirectory, fbListCollectionIds, fbSet } from '../services/firebase'
+import { fbDeleteAttendanceMonthSummary, fbGet, fbGetAttendanceLogsByMonth, fbGetEmployeesDirectory, fbListCollectionIds, fbSet } from '../services/firebase'
 import {
   buildAttendanceSummary,
   hydrateAttendanceSummaryRows,
@@ -210,6 +210,7 @@ function AttendancePreview() {
   const [sourceLogCount, setSourceLogCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [summarizing, setSummarizing] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState('')
   const [hasSnapshot, setHasSnapshot] = useState(false)
   const [snapshotPeriod, setSnapshotPeriod] = useState(null)
@@ -232,6 +233,7 @@ function AttendancePreview() {
   const [excelPageSize, setExcelPageSize] = useState(EXCEL_DETAIL_PAGE_SIZE)
   const [detailViewMode, setDetailViewMode] = useState('matrix')
   const canEditWorkdays = canManageAttendance(user)
+  const isBusy = summarizing || deleting
   const activePeriod = attendancePeriod || calendarAttendancePeriod(month)
   const periodDates = useMemo(() => attendancePeriodDates(activePeriod), [activePeriod.startDate, activePeriod.endDate])
 
@@ -720,10 +722,11 @@ function AttendancePreview() {
     if (loadedCompanyId !== companyId || !hasSnapshot || !attendancePeriod) return
     if (snapshotPeriod?.startDate === attendancePeriod.startDate &&
       snapshotPeriod?.endDate === attendancePeriod.endDate) return
+    setSummarizing(true)
     saveMonthSummary(month, { silent: true }).catch(requestError => {
       console.error('Không cập nhật được bảng công theo kỳ mới:', requestError)
       setError('Kỳ công đã thay đổi; chưa cập nhật được bảng tổng hợp. Hãy bấm Tổng hợp lại.')
-    })
+    }).finally(() => setSummarizing(false))
   }, [attendancePeriod?.startDate, attendancePeriod?.endDate, companyId, hasSnapshot,
     loadedCompanyId, month, saveMonthSummary, snapshotPeriod?.startDate, snapshotPeriod?.endDate])
 
@@ -823,6 +826,7 @@ function AttendancePreview() {
   }
 
   const handleSummarize = async () => {
+    if (isBusy) return
     const targetMonth = month || currentMonthValue()
     if (!/^\d{4}-\d{2}$/.test(targetMonth)) {
       alert('Tháng không hợp lệ. Dùng định dạng YYYY-MM.')
@@ -844,7 +848,36 @@ function AttendancePreview() {
     }
   }
 
+  const handleDeleteSummary = async () => {
+    if (!canEditWorkdays || !hasSnapshot || isBusy || manualSavingKey || confirmSaving || excelLogsLoading) return
+    const targetMonth = month
+    if (!confirm(
+      `Xóa bảng công tháng ${targetMonth} của công ty ${companyName}?\n\n` +
+      'Bảng tổng hợp và các dấu xác nhận của tháng này sẽ bị xóa. Dữ liệu chấm công gốc và số công chỉnh tay vẫn được giữ để tổng hợp lại.'
+    )) return
+
+    setDeleting(true)
+    setError('')
+    try {
+      await fbDeleteAttendanceMonthSummary(targetMonth, companyId)
+      applySnapshot(null)
+      setConfirmations({})
+      setSummaryMonths(previous => previous.filter(value => value !== targetMonth))
+      setDetailRow(null)
+      setIsExcelDetailOpen(false)
+      setExcelLogs([])
+      setManualNotice('')
+      alert(`Đã xóa bảng công tháng ${targetMonth}.`)
+    } catch (requestError) {
+      console.error('Xóa bảng công thất bại:', requestError)
+      alert('Không thể xóa bảng công: ' + (requestError.message || requestError))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   const handleToggleConfirm = async (employeeId, checked) => {
+    if (deleting) return
     const targetMonth = month || currentMonthValue()
     const key = String(employeeId)
     const previous = confirmations
@@ -867,6 +900,7 @@ function AttendancePreview() {
   const allConfirmed = rows.length > 0 && rows.every(row => confirmations[String(row.employeeId)])
 
   const handleToggleConfirmAll = async (checked) => {
+    if (deleting) return
     const targetMonth = month || currentMonthValue()
     const previous = confirmations
     const next = checked
@@ -1012,7 +1046,7 @@ function AttendancePreview() {
             type="month"
             value={month}
             onChange={event => handleMonthChange(event.target.value)}
-            disabled={summarizing}
+            disabled={isBusy}
           />
         </label>
         {summaryMonths.length > 0 && (
@@ -1021,7 +1055,7 @@ function AttendancePreview() {
             <select
               value={summaryMonths.includes(month) ? month : ''}
               onChange={event => event.target.value && handleMonthChange(event.target.value)}
-              disabled={summarizing}
+              disabled={isBusy}
             >
               {!summaryMonths.includes(month) && <option value="">Chọn tháng đã lưu</option>}
               {summaryMonths.map(value => <option key={value} value={value}>{value}</option>)}
@@ -1032,7 +1066,7 @@ function AttendancePreview() {
           type="button"
           className="attendance-preview-import-btn"
           onClick={handleOpenImport}
-          disabled={summarizing}
+          disabled={isBusy}
         >
           Tải Excel & Lưu bảng công
         </button>
@@ -1040,14 +1074,14 @@ function AttendancePreview() {
           type="button"
           className="attendance-preview-detail-btn"
           onClick={handleOpenExcelDetail}
-          disabled={summarizing || excelLogsLoading}
+          disabled={isBusy || excelLogsLoading}
           title="Xem bảng chấm công chi tiết đã tải từ Excel"
         >
           {excelLogsLoading ? 'Đang tải...' : 'Xem bảng chi tiết'}
         </button>
-        {hasSnapshot && (
-          <button type="button" className="attendance-preview-summarize" onClick={handleSummarize} disabled={summarizing}>
-            {summarizing ? 'Đang lưu...' : 'Tổng hợp lại'}
+        {(hasSnapshot || canEditWorkdays) && (
+          <button type="button" className="attendance-preview-summarize" onClick={handleSummarize} disabled={isBusy}>
+            {summarizing ? 'Đang lưu...' : hasSnapshot ? 'Tổng hợp lại' : 'Tổng hợp bảng công'}
           </button>
         )}
         {hasSnapshot && (
@@ -1055,10 +1089,22 @@ function AttendancePreview() {
             type="button"
             className="attendance-preview-pdf-btn"
             onClick={handleDownloadSummaryPdf}
-            disabled={summarizing || !rows.length}
+            disabled={isBusy || !rows.length}
             title={`Xuất bảng công tổng hợp tháng ${month} dưới dạng PDF`}
           >
             Tải PDF
+          </button>
+        )}
+        {hasSnapshot && canEditWorkdays && (
+          <button
+            type="button"
+            className="attendance-preview-delete-btn"
+            onClick={handleDeleteSummary}
+            disabled={isBusy || Boolean(manualSavingKey) || confirmSaving || excelLogsLoading}
+            title={`Xóa bảng công đã lưu tháng ${month}`}
+          >
+            <i className="fas fa-trash-alt" aria-hidden="true"></i>{' '}
+            {deleting ? 'Đang xóa...' : 'Xóa bảng công'}
           </button>
         )}
       </div>
@@ -1067,7 +1113,7 @@ function AttendancePreview() {
     {!hasSnapshot ? (
       <div className="attendance-preview-empty">
         <p>Tháng {month} chưa có bảng công đã lưu.</p>
-        <p>Bấm <strong>Tải Excel & Lưu bảng công</strong> để đẩy file Excel lên — hệ thống sẽ đồng bộ và lưu bảng công ngay.</p>
+        <p>Bấm <strong>Tổng hợp bảng công</strong> để tạo bảng từ dữ liệu chấm công hiện có, hoặc <strong>Tải Excel & Lưu bảng công</strong> để tải dữ liệu mới.</p>
       </div>
     ) : (
       <>
@@ -1080,7 +1126,7 @@ function AttendancePreview() {
                   <input
                     type="checkbox"
                     checked={allConfirmed}
-                    disabled={confirmSaving || !rows.length}
+                    disabled={deleting || confirmSaving || !rows.length}
                     onChange={event => handleToggleConfirmAll(event.target.checked)}
                     title="Xác nhận tất cả"
                   />
@@ -1108,7 +1154,7 @@ function AttendancePreview() {
                     type="checkbox"
                     className="attendance-confirm-check"
                     checked={Boolean(confirmations[String(row.employeeId)])}
-                    disabled={confirmSaving}
+                    disabled={deleting || confirmSaving}
                     onChange={event => handleToggleConfirm(row.employeeId, event.target.checked)}
                     aria-label={`Xác nhận ${row.employeeName || ''}`}
                   />
@@ -1271,7 +1317,7 @@ function AttendancePreview() {
                         <ManualWorkdayInput
                           value={item.manualWorkday !== undefined ? item.manualWorkday : item.workdays}
                           isManual={item.manualWorkday !== undefined}
-                          disabled={manualSavingKey === `${String(detailRow.employeeId)}:${item.day}`}
+                          disabled={deleting || manualSavingKey === `${String(detailRow.employeeId)}:${item.day}`}
                           employeeName={detailRow.employeeName}
                           date={item.date}
                           onSave={value => handleSaveManualWorkday(detailRow.employeeId, item.day, value)}
@@ -1418,7 +1464,7 @@ function AttendancePreview() {
                                 <ManualWorkdayInput
                                   value={cell.isManual ? cell.manualWorkday : (cell.workdays !== '' ? cell.workdays : val)}
                                   isManual={cell.isManual}
-                                  disabled={manualSavingKey === `${String(emp.employeeId)}:${d.day}`}
+                                  disabled={deleting || manualSavingKey === `${String(emp.employeeId)}:${d.day}`}
                                   employeeName={emp.name}
                                   date={d.date}
                                   onSave={value => handleSaveManualWorkday(emp.employeeId, d.day, value)}

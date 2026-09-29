@@ -20,6 +20,10 @@
   box-shadow: 0 5px 18px rgba(15, 45, 80, 0.14);
 }
 
+.attendance-preview-page > header > div:first-child {
+  min-width: 260px;
+}
+
 .attendance-preview-page h1 {
   margin: 0 0 6px;
   font-size: 26px;
@@ -341,6 +345,27 @@
 }
 
 .attendance-preview-pdf-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.attendance-preview-delete-btn {
+  padding: 10px 18px;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  background: #991b1b;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.attendance-preview-delete-btn:hover:not(:disabled) {
+  background: #7f1d1d;
+}
+
+.attendance-preview-delete-btn:disabled {
   opacity: 0.7;
   cursor: not-allowed;
 }
@@ -776,6 +801,7 @@
 @media (max-width: 768px) {
   .attendance-preview-page { padding: 10px; }
   .attendance-preview-page > header { align-items: stretch; flex-direction: column; padding: 16px; }
+  .attendance-preview-page > header > div:first-child { min-width: 0; }
   .attendance-preview-actions { flex-direction: column; align-items: stretch; }
   .attendance-preview-page header label { justify-content: space-between; }
   .attendance-preview-scroll { max-height: calc(100vh - 225px); }
