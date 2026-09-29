@@ -163,6 +163,40 @@ test('finds missing DEOCA shifts using the same name matching as timing', () => 
   assert.equal(resolveAttendanceShift({}, logs[0], settings).start, '06:00')
 })
 
+test('DEOCA Ca 1 and Ca 2 can share the full administrative workday', () => {
+  const settings = normalizeAttendanceShiftSettings({
+    workStart: '07:00',
+    workEnd: '17:30',
+    deocaShiftAliases: { 'Ca 1': 'administrative', 'Ca02': 'administrative' }
+  })
+  const payload = buildAttendanceShiftSettingsPayload(settings)
+  assert.deepEqual(payload.deocaShiftAliases, { 'ca 1': 'administrative', 'ca 2': 'administrative' })
+  const logs = ['Ca 1', 'Ca 2'].map(shiftName => ({ importFormat: 'deoca-punch', shiftName }))
+  assert.deepEqual(findMissingAttendanceShifts(logs, settings), [])
+  for (const log of logs) {
+    const timing = calculateAttendanceTiming({
+      employee: { position: 'Sale', shift: 'Ca ngày' },
+      log,
+      checkIn: '07:12',
+      checkOut: '17:20',
+      attendanceSettings: settings
+    })
+    assert.equal(timing.shift.name, 'Ca Hành chính')
+    assert.equal(timing.shift.start, '07:00')
+    assert.equal(timing.shift.end, '17:30')
+    assert.equal(timing.lateMinutes, 12)
+    assert.equal(timing.earlyMinutes, 10)
+  }
+  const withExplicitShift = normalizeAttendanceShiftSettings({
+    ...settings,
+    shifts: {
+      ...settings.shifts,
+      ca1: { name: 'Ca 1', standardCheckIn: '06:00', standardCheckOut: '14:00' }
+    }
+  })
+  assert.equal(resolveAttendanceShift({}, logs[0], withExplicitShift).start, '06:00')
+})
+
 test('new custom shifts inherit a valid workday standard when only hours are entered', () => {
   const settings = normalizeAttendanceShiftSettings({
     shifts: {

@@ -1567,7 +1567,7 @@ function AttendanceImportModal({
     }
   }
 
-  const saveMissingShifts = async () => {
+  const saveMissingShifts = async (useAdministrativeHours = false) => {
     if (!previewData?.logs || loading) return
     if (!isCoreStaffUser(user)) {
       alert('Chỉ Admin, Nhân sự hoặc Quản lý của công ty này được cài đặt giờ ca.')
@@ -1585,9 +1585,15 @@ function AttendanceImportModal({
       const storedSettings = await fbGet('hr/attendanceSettings/default', activeCompanyId)
       const currentSettings = normalizeAttendanceShiftSettings(storedSettings)
       const missingNames = findMissingAttendanceShifts(selectedLogs, currentSettings, skippedSourceKeys)
+      const namesToSave = useAdministrativeHours
+        ? missingNames.filter(name => ['ca 1', 'ca 2'].includes(normalizeAttendanceShiftName(name)))
+        : missingNames
       let savedSettings = currentSettings
-      if (missingNames.length) {
-        const incomplete = missingNames.find(name => {
+      if (useAdministrativeHours && !namesToSave.length) {
+        throw new Error('Không còn Ca 1 hoặc Ca 2 cần ghép với Ca Hành chính.')
+      }
+      if (namesToSave.length) {
+        const incomplete = !useAdministrativeHours && namesToSave.find(name => {
           const draft = missingShiftDrafts[name] || {}
           const start = attendanceTimeToMinutes(draft.start)
           const end = attendanceTimeToMinutes(draft.end)
@@ -1596,7 +1602,7 @@ function AttendanceImportModal({
         if (incomplete) {
           throw new Error(`Hãy nhập giờ vào và giờ ra chuẩn, khác nhau, cho ${incomplete}.`)
         }
-        const newShifts = Object.fromEntries(missingNames.map((name, index) => {
+        const newShifts = Object.fromEntries((useAdministrativeHours ? [] : namesToSave).map((name, index) => {
           const draft = missingShiftDrafts[name]
           return [`custom_deoca_${Date.now()}_${index}`, {
             name,
@@ -1610,20 +1616,30 @@ function AttendanceImportModal({
         const nextSettings = {
           ...currentSettings,
           policyVersion: Number(currentSettings.policyVersion || 0) + 1,
-          shifts: { ...currentSettings.shifts, ...newShifts }
+          shifts: { ...currentSettings.shifts, ...newShifts },
+          deocaShiftAliases: {
+            ...currentSettings.deocaShiftAliases,
+            ...Object.fromEntries((useAdministrativeHours ? namesToSave : [])
+              .map(name => [normalizeAttendanceShiftName(name), 'administrative']))
+          }
         }
         const validation = validateAttendancePolicy(nextSettings)
         if (!validation.isValid) throw new Error(validation.error)
         await fbUpdate('hr/attendanceSettings/default', buildAttendanceShiftSettingsPayload(nextSettings), activeCompanyId)
         savedSettings = normalizeAttendanceShiftSettings(await fbGet('hr/attendanceSettings/default', activeCompanyId))
         const stillMissing = findMissingAttendanceShifts(selectedLogs, savedSettings, skippedSourceKeys)
+          .filter(name => namesToSave.some(saved =>
+            normalizeAttendanceShiftName(saved) === normalizeAttendanceShiftName(name)))
         if (stillMissing.length) throw new Error(`Chưa đọc lại được giờ chuẩn cho ${stillMissing.join(', ')}. Hãy thử lưu lại.`)
         const savedShifts = getAttendanceShiftOptions(savedSettings)
-        const incorrect = missingNames.find(name => {
-          const shift = savedShifts.find(item =>
-            normalizeAttendanceShiftName(item.name) === normalizeAttendanceShiftName(name))
-          return shift?.standardCheckIn !== missingShiftDrafts[name].start ||
-            shift?.standardCheckOut !== missingShiftDrafts[name].end
+        const incorrect = namesToSave.find(name => {
+          const shift = useAdministrativeHours
+            ? savedSettings.shifts[savedSettings.deocaShiftAliases[normalizeAttendanceShiftName(name)]]
+            : savedShifts.find(item =>
+              normalizeAttendanceShiftName(item.name) === normalizeAttendanceShiftName(name))
+          const expected = useAdministrativeHours ? currentSettings.shifts.administrative : missingShiftDrafts[name]
+          return shift?.standardCheckIn !== (useAdministrativeHours ? expected.standardCheckIn : expected.start) ||
+            shift?.standardCheckOut !== (useAdministrativeHours ? expected.standardCheckOut : expected.end)
         })
         if (incorrect) throw new Error(`Giờ chuẩn của ${incorrect} chưa được lưu đúng. Hãy thử lại.`)
       }
@@ -1637,7 +1653,9 @@ function AttendanceImportModal({
         })
       } : previous)
       setMissingShiftDrafts({})
-      setShiftNotice('Đã lưu giờ ca cho công ty và tính lại bảng xem trước.')
+      setShiftNotice(useAdministrativeHours
+        ? 'Đã dùng giờ Ca Hành chính cho Ca 1/Ca 2 và tính lại bảng xem trước.'
+        : 'Đã lưu giờ ca cho công ty và tính lại bảng xem trước.')
     } catch (error) {
       alert('Không lưu được giờ ca: ' + (error.message || String(error)))
     } finally {
@@ -1973,7 +1991,13 @@ function AttendanceImportModal({
               {previewMissingShifts.length > 0 && (
                 <section style={{ padding: 14, border: '1px solid #f59e0b', borderRadius: 8, background: '#fffbeb', marginBottom: 16 }}>
                   <h4 style={{ marginTop: 0 }}>Nhập giờ chuẩn cho ca trong file</h4>
-                  <p>Các ca {previewMissingShifts.join(', ')} chưa có trong cài đặt đã lưu của {companyName || 'công ty này'}. Nhập giờ thực tế rồi lưu ngay tại đây.</p>
+                  <p>Các ca {previewMissingShifts.join(', ')} chưa có trong cài đặt đã lưu của {companyName || 'công ty này'}. Chọn giờ Ca Hành chính cho Ca 1/Ca 2 nếu cùng làm cả ngày, hoặc nhập giờ riêng bên dưới.</p>
+                  {previewMissingShifts.some(name => ['ca 1', 'ca 2'].includes(normalizeAttendanceShiftName(name))) && (
+                    <button type="button" className="btn btn-primary" disabled={loading}
+                      onClick={() => saveMissingShifts(true)} style={{ marginBottom: 12 }}>
+                      {loading ? 'Đang lưu...' : `Dùng giờ Ca Hành chính (${attendanceSettings.shifts.administrative.standardCheckIn}–${attendanceSettings.shifts.administrative.standardCheckOut}) cho Ca 1/Ca 2`}
+                    </button>
+                  )}
                   <div style={{ display: 'grid', gap: 10 }}>
                     {previewMissingShifts.map(name => (
                       <div key={name} style={{ display: 'flex', alignItems: 'end', flexWrap: 'wrap', gap: 10 }}>
@@ -1994,7 +2018,7 @@ function AttendanceImportModal({
                     ))}
                   </div>
                   <p style={{ fontSize: '0.85rem', marginBottom: 8 }}>Chuẩn công mặc định: {attendanceSettings.standardWorkMinutes} phút/ca, nghỉ không tính: 0 phút. Có thể chỉnh riêng trong Cài đặt ca.</p>
-                  <button type="button" className="btn btn-primary" disabled={loading} onClick={saveMissingShifts}>
+                  <button type="button" className="btn btn-primary" disabled={loading} onClick={() => saveMissingShifts(false)}>
                     {loading ? 'Đang lưu giờ ca...' : 'Lưu giờ ca và tính lại'}
                   </button>
                 </section>

@@ -312,6 +312,12 @@ export const normalizeAttendancePolicy = (settings = {}) => {
     start: shift.standardCheckIn,
     end: shift.standardCheckOut
   }]))
+  const deocaShiftAliases = Object.fromEntries(
+    Object.entries(source.deocaShiftAliases && typeof source.deocaShiftAliases === 'object'
+      ? source.deocaShiftAliases : {})
+      .map(([name, shiftId]) => [normalizeAttendanceShiftName(name), String(shiftId || '')])
+      .filter(([name, shiftId]) => name && shifts[shiftId])
+  )
   const penaltyRules = source.penaltyRules && typeof source.penaltyRules === 'object' ? source.penaltyRules : {}
   const latePenaltyThresholdMinutes = positiveNumber(source.latePenaltyThresholdMinutes ?? penaltyRules.latePenaltyThresholdMinutes,
     DEFAULT_ATTENDANCE_POLICY.latePenaltyThresholdMinutes)
@@ -363,6 +369,7 @@ export const normalizeAttendancePolicy = (settings = {}) => {
     holidays,
     shifts,
     shiftDefinitions,
+    deocaShiftAliases,
     standardCheckIn: workStart,
     standardCheckOut: workEnd
   }
@@ -479,14 +486,17 @@ export const normalizeAttendanceShiftName = value => {
 }
 
 export const findMissingAttendanceShifts = (logs, settings, skippedSourceKeys = new Set()) => {
-  const configuredNames = new Set(getAttendanceShiftOptions(settings)
+  const policy = normalizeAttendanceShiftSettings(settings)
+  const configuredNames = new Set(Object.values(policy.shifts)
     .map(shift => normalizeAttendanceShiftName(shift.name)))
   const missingNames = new Map()
   for (const log of logs || []) {
     if (log.importFormat !== 'deoca-punch' || skippedSourceKeys.has(log._sourceEmployeeKey)) continue
     const name = String(log.shiftName || '').trim().replace(/\s+/g, ' ')
     const key = normalizeAttendanceShiftName(name)
-    if (key && !configuredNames.has(key) && !missingNames.has(key)) missingNames.set(key, name)
+    if (key && !configuredNames.has(key) && !policy.deocaShiftAliases[key] && !missingNames.has(key)) {
+      missingNames.set(key, name)
+    }
   }
   return [...missingNames.values()]
 }
@@ -626,7 +636,11 @@ export const resolveAttendanceShift = (employee = {}, log = {}, settings = {}) =
   // File DEOCA chỉ rõ Ca 1/Ca 2 ở cột Bộ phận; ca trên từng dòng có ưu tiên
   // hơn ca mặc định lưu trong hồ sơ nhân viên.
   if (log.importFormat === 'deoca-punch' && log.shiftName) {
-    const sourceShift = configuredShiftFromName(log.shiftName, settings)
+    const sourceShift = exactShiftFromConfiguration(log.shiftName, settings) ||
+      shiftFromConfiguration(
+        normalizeAttendanceShiftSettings(settings).deocaShiftAliases[normalizeAttendanceShiftName(log.shiftName)],
+        settings
+      ) || configuredShiftFromName(log.shiftName, settings)
     if (sourceShift) return sourceShift
   }
   const employeeShiftId = firstValue(employee.shiftId, employee.shift_id)
