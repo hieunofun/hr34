@@ -72,8 +72,9 @@ kiểm tra kết quả này ở chế độ chỉ đọc; không sửa log gốc
 
 ## Xuất bảng công HR31
 
-Ở trang Chấm công & Lương, nút **Tải Excel** dùng mẫu bảng tổng hợp riêng khi mã
-công ty trong `CompanyContext` là `hr31` (không phân biệt chữ hoa/thường). Các
+Ở trang Chấm công & Lương, nút **Tải Excel** dùng mẫu bảng tổng hợp riêng khi ID
+công ty trong `CompanyContext` là `00000000-0000-0000-0000-000000000031`
+(tên hiển thị Hr31, mã dữ liệu `COMPANY_31`). Các
 công ty khác tiếp tục dùng mẫu xuất hiện tại. Trang **Bảng công** đã lưu cũng có
 nút **Xuất Excel HR31** riêng, cạnh nút tải PDF. Mẫu HR31 tại
 `public/templates/hr31-attendance-template.xlsx` đã xóa dữ liệu nhân viên và

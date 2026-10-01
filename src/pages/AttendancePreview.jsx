@@ -24,6 +24,7 @@ import { canManageAttendance } from '../utils/staffAccess'
 import { getAttendancePeriod } from '../services/attendancePeriods'
 import { attendanceDateForDay, attendancePeriodDates, calendarAttendancePeriod } from '../utils/attendancePeriod'
 import { openAttendancePrintWindow } from '../utils/attendancePdf'
+import { isHr31CompanyId } from '../utils/hr31Company'
 import './AttendancePreview.css'
 
 const EXCEL_DETAIL_PAGE_SIZE = 100
@@ -200,8 +201,8 @@ const groupRowsByDepartment = rows => {
 
 function AttendancePreview() {
   const { user } = useAuth()
-  const { company, companyId, companyCode, companyName } = useCompany()
-  const isHr31 = String(companyCode || '').trim().toLowerCase() === 'hr31'
+  const { company, companyId, companyName } = useCompany()
+  const isHr31 = isHr31CompanyId(companyId)
   const [month, setMonth] = useState(currentMonthValue)
   const [attendancePeriod, setAttendancePeriod] = useState(null)
   const [summaryMonths, setSummaryMonths] = useState([])

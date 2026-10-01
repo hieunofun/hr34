@@ -15,8 +15,6 @@ const EMPLOYEE_HEADER_MERGES = [
   'AW', 'AX', 'AY', 'AZ', 'BA', 'BB', 'BC', 'BD', 'BE', 'BG', 'BH', 'BI', 'BJ', 'BK', 'BL'
 ]
 
-export const isHr31CompanyCode = code => String(code || '').trim().toLowerCase() === 'hr31'
-
 const clone = value => value == null ? value : structuredClone(value)
 const asDate = value => {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? '' : value.toISOString().slice(0, 10)

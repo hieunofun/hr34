@@ -28,7 +28,8 @@ import {
 import { TAX_CONFIG } from '../utils/constants'
 import { calculateProgressiveTax, formatMoney, normalizeString } from '../utils/helpers'
 import { downloadAttendanceFromGoldenTemplate } from '../utils/attendanceExcel'
-import { downloadHr31Attendance, isHr31CompanyCode } from '../utils/hr31AttendanceExcel'
+import { downloadHr31Attendance } from '../utils/hr31AttendanceExcel'
+import { isHr31CompanyId } from '../utils/hr31Company'
 import { useCompany } from '../contexts/CompanyContext'
 import { prorateMonthlySalary } from '../utils/attendanceCalculations'
 import { normalizeAttendanceShiftSettings } from '../utils/attendanceShift'
@@ -634,7 +635,7 @@ const MemoizedInput = ({ value, onSave, onFocus, placeholder, type = 'text', ste
 }
 
 function Attendance() {
-  const { company, companyCode, companyName } = useCompany()
+  const { company, companyId, companyName } = useCompany()
   const [activeTab, setActiveTab] = useState('attendance')
 
   const [attendanceLogs, setAttendanceLogs] = useState([])
@@ -1590,7 +1591,7 @@ function Attendance() {
 
     try {
       const rows = needsWorkdaySummary ? filteredAttendanceSummary : buildSummaryRowsForExport()
-      if (isHr31CompanyCode(companyCode)) {
+      if (isHr31CompanyId(companyId)) {
         await downloadHr31Attendance({
           rows,
           month: filterAttendanceMonth,
@@ -1867,7 +1868,7 @@ function Attendance() {
             <button
               className="btn btn-success"
               onClick={handleExportAttendance}
-              title={isHr31CompanyCode(companyCode)
+              title={isHr31CompanyId(companyId)
                 ? 'Tải bảng công tháng theo mẫu HR31'
                 : 'Tải bảng công tháng theo mẫu Excel'}
             >

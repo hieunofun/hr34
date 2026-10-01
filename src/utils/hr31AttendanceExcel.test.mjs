@@ -3,16 +3,17 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import JSZip from 'jszip'
 import ExcelJS from 'exceljs'
-import { buildHr31AttendanceWorkbook, isHr31CompanyCode } from './hr31AttendanceExcel.js'
+import { buildHr31AttendanceWorkbook } from './hr31AttendanceExcel.js'
+import { isHr31CompanyId } from './hr31Company.js'
 
 const templateFile = new URL('../../public/templates/hr31-attendance-template.xlsx', import.meta.url)
 const period = { startDate: '2026-08-26', endDate: '2026-09-25' }
 
-test('Only company code HR31 selects the new Excel format', () => {
-  assert.equal(isHr31CompanyCode('hr31'), true)
-  assert.equal(isHr31CompanyCode(' HR31 '), true)
-  assert.equal(isHr31CompanyCode('hr34'), false)
-  assert.equal(isHr31CompanyCode('hr310'), false)
+test('Only the actual Hr31 company ID selects the new Excel format', () => {
+  assert.equal(isHr31CompanyId('00000000-0000-0000-0000-000000000031'), true)
+  assert.equal(isHr31CompanyId('00000000-0000-0000-0000-000000000034'), false)
+  assert.equal(isHr31CompanyId('COMPANY_31'), false)
+  assert.equal(isHr31CompanyId(null), false)
 })
 
 test('Public HR31 template contains no sample employee or company data', async () => {
