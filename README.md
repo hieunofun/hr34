@@ -69,3 +69,17 @@ hiện tại**: hai log có đủ lượt chấm hiển thị 9 giờ, 1 công v
 cách tính cũ là 13,73 và 18,45 giờ. `scripts/verifyLegacyTenantSettings.mjs`
 kiểm tra kết quả này ở chế độ chỉ đọc; không sửa log gốc, bảng công đã lưu hoặc
 `policySnapshot`.
+
+## Xuất bảng công HR31
+
+Ở trang Chấm công & Lương, nút **Tải Excel** dùng mẫu bảng tổng hợp riêng khi mã
+công ty trong `CompanyContext` là `hr31` (không phân biệt chữ hoa/thường). Các
+công ty khác tiếp tục dùng mẫu xuất hiện tại. Mẫu HR31 tại
+`public/templates/hr31-attendance-template.xlsx` đã xóa dữ liệu nhân viên và
+thông tin công ty khỏi file tham chiếu. File xuất lấy ngày của kỳ công đang chọn,
+giữ bố cục 31 cột ngày, tự tăng số dòng nhân viên, công thức tổng và vùng in.
+
+Mã nhân viên nằm ở cột **MS NV**; **Mã HT**, **DA/GT**, phép tồn, ngày điều chỉnh
+lương và các cột lương cũ/mới để trống vì dữ liệu tổng hợp HR34 hiện chưa có
+nguồn tương ứng. Ký hiệu nghỉ phép, nghỉ không phép và ngày lễ được quy đổi sang
+`F`, `K`, `L` theo dữ liệu ngày; các ký hiệu nguồn đã nhận diện được giữ nguyên.

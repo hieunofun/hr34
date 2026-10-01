@@ -28,6 +28,8 @@ import {
 import { TAX_CONFIG } from '../utils/constants'
 import { calculateProgressiveTax, formatMoney, normalizeString } from '../utils/helpers'
 import { downloadAttendanceFromGoldenTemplate } from '../utils/attendanceExcel'
+import { downloadHr31Attendance, isHr31CompanyCode } from '../utils/hr31AttendanceExcel'
+import { useCompany } from '../contexts/CompanyContext'
 import { prorateMonthlySalary } from '../utils/attendanceCalculations'
 import { normalizeAttendanceShiftSettings } from '../utils/attendanceShift'
 import { getAttendancePeriod } from '../services/attendancePeriods'
@@ -632,6 +634,7 @@ const MemoizedInput = ({ value, onSave, onFocus, placeholder, type = 'text', ste
 }
 
 function Attendance() {
+  const { company, companyCode, companyName } = useCompany()
   const [activeTab, setActiveTab] = useState('attendance')
 
   const [attendanceLogs, setAttendanceLogs] = useState([])
@@ -1587,15 +1590,26 @@ function Attendance() {
 
     try {
       const rows = needsWorkdaySummary ? filteredAttendanceSummary : buildSummaryRowsForExport()
-      await downloadAttendanceFromGoldenTemplate({
-        rows,
-        month: filterAttendanceMonth,
-        attendanceSettings,
-        attendancePeriod: activeAttendancePeriod,
-        fileName: `BANG_CONG_${filterAttendanceMonth}.xlsx`
-      })
+      if (isHr31CompanyCode(companyCode)) {
+        await downloadHr31Attendance({
+          rows,
+          month: filterAttendanceMonth,
+          attendanceSettings,
+          attendancePeriod: activeAttendancePeriod,
+          companyName,
+          companyAddress: company?.address || company?.dia_chi || ''
+        })
+      } else {
+        await downloadAttendanceFromGoldenTemplate({
+          rows,
+          month: filterAttendanceMonth,
+          attendanceSettings,
+          attendancePeriod: activeAttendancePeriod,
+          fileName: `BANG_CONG_${filterAttendanceMonth}.xlsx`
+        })
+      }
     } catch (error) {
-      console.error('Không thể xuất báo cáo theo golden template:', error)
+      console.error('Không thể xuất báo cáo Excel:', error)
       alert('Không thể xuất báo cáo Excel: ' + error.message)
     }
   }
@@ -1853,7 +1867,9 @@ function Attendance() {
             <button
               className="btn btn-success"
               onClick={handleExportAttendance}
-              title="Tải bảng công tháng theo mẫu Excel"
+              title={isHr31CompanyCode(companyCode)
+                ? 'Tải bảng công tháng theo mẫu HR31'
+                : 'Tải bảng công tháng theo mẫu Excel'}
             >
               <i className="fas fa-file-excel"></i>
               Tải Excel
