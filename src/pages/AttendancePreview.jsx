@@ -200,7 +200,8 @@ const groupRowsByDepartment = rows => {
 
 function AttendancePreview() {
   const { user } = useAuth()
-  const { companyId, companyName } = useCompany()
+  const { company, companyId, companyCode, companyName } = useCompany()
+  const isHr31 = String(companyCode || '').trim().toLowerCase() === 'hr31'
   const [month, setMonth] = useState(currentMonthValue)
   const [attendancePeriod, setAttendancePeriod] = useState(null)
   const [summaryMonths, setSummaryMonths] = useState([])
@@ -211,6 +212,7 @@ function AttendancePreview() {
   const [loading, setLoading] = useState(true)
   const [summarizing, setSummarizing] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [exportingExcel, setExportingExcel] = useState(false)
   const [error, setError] = useState('')
   const [hasSnapshot, setHasSnapshot] = useState(false)
   const [snapshotPeriod, setSnapshotPeriod] = useState(null)
@@ -233,7 +235,7 @@ function AttendancePreview() {
   const [excelPageSize, setExcelPageSize] = useState(EXCEL_DETAIL_PAGE_SIZE)
   const [detailViewMode, setDetailViewMode] = useState('matrix')
   const canEditWorkdays = canManageAttendance(user)
-  const isBusy = summarizing || deleting
+  const isBusy = summarizing || deleting || exportingExcel
   const activePeriod = attendancePeriod || calendarAttendancePeriod(month)
   const periodDates = useMemo(() => attendancePeriodDates(activePeriod), [activePeriod.startDate, activePeriod.endDate])
 
@@ -609,6 +611,27 @@ function AttendancePreview() {
       rows: reportRows,
       tableMode: 'list'
     })
+  }
+
+  const handleDownloadHr31Excel = async () => {
+    if (!isHr31 || !hasSnapshot || !rows.length || isBusy || manualSavingKey || confirmSaving) return
+    setExportingExcel(true)
+    try {
+      const { downloadHr31Attendance } = await import('../utils/hr31AttendanceExcel')
+      await downloadHr31Attendance({
+        rows,
+        month,
+        attendancePeriod: activePeriod,
+        attendanceSettings,
+        companyName,
+        companyAddress: company?.address || company?.dia_chi || ''
+      })
+    } catch (requestError) {
+      console.error('Không thể xuất Excel HR31:', requestError)
+      alert('Không thể xuất Excel HR31: ' + (requestError.message || requestError))
+    } finally {
+      setExportingExcel(false)
+    }
   }
 
   useEffect(() => {
@@ -1096,6 +1119,17 @@ function AttendancePreview() {
             title={`Xuất bảng công tổng hợp tháng ${month} dưới dạng PDF`}
           >
             Tải PDF
+          </button>
+        )}
+        {isHr31 && hasSnapshot && (
+          <button
+            type="button"
+            className="attendance-preview-excel-btn"
+            onClick={handleDownloadHr31Excel}
+            disabled={isBusy || !rows.length || Boolean(manualSavingKey) || confirmSaving}
+            title={`Xuất bảng công đã lưu tháng ${month} theo mẫu HR31`}
+          >
+            {exportingExcel ? 'Đang xuất Excel...' : 'Xuất Excel HR31'}
           </button>
         )}
         {canEditWorkdays && (
