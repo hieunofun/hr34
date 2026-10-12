@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { buildAttendanceWorkbook } from './attendanceExcel.js'
+import ExcelJS from 'exceljs'
 
 test('Excel attendance export uses the company penalty amounts', async () => {
   const fixture = await readFile(new URL('../../public/templates/attendance-report-template.xlsx', import.meta.url))
@@ -39,4 +40,28 @@ test('Excel export shows the confirmed cross-month period and original day dates
   assert.equal(sheet.getCell('AP6').value, '01/09')
   assert.equal(sheet.getCell('AK7').value, 1)
   assert.equal(sheet.getCell('BM7').value, 1)
+})
+
+test('32-day export includes both day 21 columns and the final day in the weekly summary', async () => {
+  const fixture = await readFile(new URL('../../public/templates/attendance-report-template.xlsx', import.meta.url))
+  const period = { month: '2026-09', startDate: '2026-08-21', endDate: '2026-09-21' }
+  const days = new Map([
+    ['2026-08-21', { logs: [], workdays: 0.25 }],
+    ['2026-09-21', { logs: [], workdays: 0.75, late: true }]
+  ])
+  const rows = Array.from({ length: 54 }, (_, index) => ({
+    employeeId: `e-${index}`, employeeName: `Employee ${index + 1}`, days, workdays: 1
+  }))
+  const workbook = await buildAttendanceWorkbook(fixture, rows, period.month, {}, period)
+  const sheet = workbook.worksheets[0]
+  assert.equal(sheet.getCell('AL4').value, '21/08/2026 - 21/09/2026')
+  assert.equal(sheet.getCell('AJ6').value, '21/08')
+  assert.equal(sheet.getCell('BO6').value, '21/09')
+  assert.equal(sheet.getCell('AJ7').value, 0.25)
+  assert.equal(sheet.getCell('BO7').value, 0.75)
+  assert.equal(sheet.getCell('BO60').value, 0.75)
+  assert.equal(sheet.getCell('BP63').value, 54)
+  const restored = new ExcelJS.Workbook()
+  await restored.xlsx.load(await workbook.xlsx.writeBuffer())
+  assert.equal(restored.worksheets[0].getCell('BO60').value, 0.75)
 })

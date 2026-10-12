@@ -1,6 +1,7 @@
 import { buildSourceEmployeeKey } from './attendanceMatching.js'
 import { departmentForAttendanceSummary } from './attendanceDepartment.js'
-import { attendanceDateForDay } from './attendancePeriod.js'
+import { attendanceDateForDay, dateInAttendancePeriod, isValidAttendanceDate } from './attendancePeriod.js'
+import { manualWorkdayForDate } from './attendanceManual.js'
 import {
   applyCalculatedAttendanceTiming,
   attendanceTimeToMinutes,
@@ -545,8 +546,7 @@ export const buildAttendanceSummary = ({
         date
       )
       const paidLeaveWorkdays = numberValue(
-        manualWorkdays[row.employeeId]?.[day] ??
-        manualWorkdays[row.employeeId]?.[String(day)] ??
+        manualWorkdayForDate(manualWorkdays[row.employeeId], date, attendancePeriod) ??
         1
       )
       row.days.set(date, {
@@ -565,12 +565,15 @@ export const buildAttendanceSummary = ({
     // Override công từng ngày do Kế toán/HR chỉnh tay (không chỉ ngày phép).
     const overrides = manualWorkdays[row.employeeId] || manualWorkdays[String(row.employeeId)] || {}
     Object.entries(overrides).forEach(([dayKey, rawValue]) => {
-      const day = Number(dayKey)
-      if (!Number.isFinite(day) || day < 1 || day > 31) return
-      const date = attendancePeriod
+      const explicitDate = isValidAttendanceDate(dayKey)
+      const day = explicitDate ? Number(dayKey.slice(8, 10)) : Number(dayKey)
+      if (!explicitDate && (!Number.isFinite(day) || day < 1 || day > 31)) return
+      const date = explicitDate ? dayKey : attendancePeriod
         ? attendanceDateForDay(attendancePeriod, day)
         : `${month}-${String(day).padStart(2, '0')}`
       if (!date) return
+      if (attendancePeriod ? !dateInAttendancePeriod(date, attendancePeriod) : date.slice(0, 7) !== month) return
+      if (!explicitDate && Object.hasOwn(overrides, date)) return
       const current = row.days.get(date) || summarizeAttendanceDay(
         [],
         employee || {},
@@ -580,7 +583,8 @@ export const buildAttendanceSummary = ({
       if (policy.manualOverridePriority === 'none' ||
         (policy.manualOverridePriority === 'allowed' && Number(current.workdaysExact ?? current.workdays) > 0)) return
       const workdays = numberValue(rawValue)
-      const isPaidLeaveDay = permissionDays.includes(day)
+      const isPaidLeaveDay = permissionDays.includes(day) &&
+        (!attendancePeriod || attendanceDateForDay(attendancePeriod, day) === date)
       row.days.set(date, {
         ...current,
         workdays,

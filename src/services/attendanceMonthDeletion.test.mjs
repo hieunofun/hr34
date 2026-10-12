@@ -108,6 +108,24 @@ const removeMonth = fixture => {
   return deleteAttendanceMonth({ db: fixture.db, companyId, month: period.month, expectedPeriod: period })
 }
 
+test('company 32 deletion handles a 32-day period and preserves the next day and other tenants', async () => {
+  const tenant = '00000000-0000-0000-0000-000000000032'
+  const customPeriod = { month: '2026-09', startDate: '2026-08-21', endDate: '2026-09-21' }
+  const fixture = fakeDatabase()
+  fixture.tables.attendance_periods = [{ company_id: tenant, month_key: customPeriod.month,
+    start_date: customPeriod.startDate, end_date: customPeriod.endDate }]
+  fixture.tables.cham_cong = [attendance('first', customPeriod.startDate, tenant),
+    attendance('last', customPeriod.endDate, tenant), attendance('next', '2026-09-22', tenant),
+    attendance('other', customPeriod.endDate, companyId)]
+  fixture.tables.hr_records = [hrRecord('attendanceLogs', 'first', { date: customPeriod.startDate }, false, tenant),
+    hrRecord('attendanceLogs', 'last', { date: customPeriod.endDate }, false, tenant),
+    hrRecord('attendanceLogs', 'next', { date: '2026-09-22' }, false, tenant)]
+  setTenantSession('auth-staff', tenant)
+  await deleteAttendanceMonth({ db: fixture.db, companyId: tenant, month: customPeriod.month, expectedPeriod: customPeriod })
+  assert.deepEqual(fixture.tables.cham_cong.map(row => row.id), ['next', 'other'])
+  assert.deepEqual(fixture.tables.hr_records.map(row => row.data.date), ['2026-09-22'])
+})
+
 test('deletes both attendance stores at both period boundaries, scoped and legacy month records only', async () => {
   const fixture = fakeDatabase()
   await removeMonth(fixture)

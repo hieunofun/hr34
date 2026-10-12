@@ -17,7 +17,7 @@ const WEEK_LAYOUTS = [
   { label: 'AR', count: 'AT', list: 'AU', startDay: 8, endDay: 14 },
   { label: 'AY', count: 'BA', list: 'BB', startDay: 15, endDay: 21 },
   { label: 'BF', count: 'BH', list: 'BI', startDay: 22, endDay: 28 },
-  { label: 'BO', count: 'BP', list: 'BQ', startDay: 29, endDay: 31 }
+  { label: 'BO', count: 'BP', list: 'BQ', startDay: 29, endDay: 32 }
 ]
 
 const clone = (value) => {
@@ -172,7 +172,7 @@ const populateEmployee = (worksheet, rowNumber, row, index, dates, policy) => {
   worksheet.getCell(rowNumber, 34).value = null // FIELD_NOT_AVAILABLE: công lễ
   worksheet.getCell(rowNumber, 35).value = Number(row.workdays || 0)
 
-  for (let day = 1; day <= 31; day += 1) {
+  for (let day = 1; day <= Math.max(31, dates.length); day += 1) {
     const cell = worksheet.getCell(rowNumber, DAY_START_COLUMN + day - 1)
     if (day > dates.length) {
       cell.value = null
@@ -191,10 +191,15 @@ const populateHeader = (worksheet, month, dates) => {
   worksheet.name = `THÁNG ${monthNumber}`
   worksheet.getCell('AJ2').value = `BẢNG CÔNG T${monthNumber}/${year}`
   worksheet.getCell('AL4').value = `${dates[0].slice(8, 10)}/${dates[0].slice(5, 7)}/${dates[0].slice(0, 4)} - ${dates.at(-1).slice(8, 10)}/${dates.at(-1).slice(5, 7)}/${dates.at(-1).slice(0, 4)}`
-  for (let day = 1; day <= 31; day += 1) {
+  for (let day = 1; day <= Math.max(31, dates.length); day += 1) {
     const column = DAY_START_COLUMN + day - 1
     const date = dates[day - 1]
     const visible = Boolean(date)
+    if (column > DAY_END_COLUMN) {
+      worksheet.getColumn(column).width = worksheet.getColumn(DAY_END_COLUMN).width
+      worksheet.getCell(5, column).style = clone(worksheet.getCell(5, DAY_END_COLUMN).style)
+      worksheet.getCell(6, column).style = clone(worksheet.getCell(6, DAY_END_COLUMN).style)
+    }
     worksheet.getColumn(column).hidden = !visible
     worksheet.getCell(5, column).value = visible
       ? ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][new Date(`${date}T00:00:00`).getDay()]
@@ -270,6 +275,9 @@ export const buildAttendanceWorkbook = async (templateData, rows, month, attenda
     const targetRow = TEMPLATE_DATA_START_ROW + index
     if (targetRow !== TEMPLATE_DATA_START_ROW) {
       copyEmployeeRowStyle(worksheet, TEMPLATE_DATA_START_ROW, targetRow)
+    }
+    if (dates.length > 31) {
+      worksheet.getCell(targetRow, DAY_START_COLUMN + 31).style = clone(worksheet.getCell(targetRow, DAY_END_COLUMN).style)
     }
     populateEmployee(
       worksheet,

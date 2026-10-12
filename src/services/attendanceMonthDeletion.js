@@ -27,7 +27,7 @@ export async function deleteAttendanceMonth({ db, companyId, month, expectedPeri
 
   const period = validateAttendancePeriod(storedPeriod
     ? { month, startDate: storedPeriod.start_date, endDate: storedPeriod.end_date }
-    : calendarPeriod)
+    : calendarPeriod, [], companyId)
   if (expectedPeriod && (expectedPeriod.month !== month ||
     expectedPeriod.startDate !== period.startDate || expectedPeriod.endDate !== period.endDate)) {
     throw new Error('Kỳ công đã thay đổi. Vui lòng tải lại bảng công trước khi xóa.')

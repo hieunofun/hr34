@@ -70,6 +70,21 @@ cách tính cũ là 13,73 và 18,45 giờ. `scripts/verifyLegacyTenantSettings.m
 kiểm tra kết quả này ở chế độ chỉ đọc; không sửa log gốc, bảng công đã lưu hoặc
 `policySnapshot`.
 
+## Nhập bảng công và kỳ riêng của công ty 32
+
+Các công ty khác dùng luồng cũ: phân tích Excel, ghép hồ sơ, rồi **Xác nhận
+Import** để nhập toàn bộ ngày hợp lệ trong file. Tháng tổng hợp lấy theo ngày
+gốc; không bắt xác nhận khoảng kỳ công khi nhập.
+
+Riêng công ty `00000000-0000-0000-0000-000000000032` xác nhận kỳ trước khi
+nhập. Kỳ được phép có tối đa **32 ngày**, tính cả ngày đầu và cuối; ví dụ
+21/08/2026–21/09/2026. Bảng công, chỉnh công tay và Excel phân biệt các ngày
+bằng ngày tháng đầy đủ. Hai kỳ vẫn không được chồng ngày lên nhau.
+
+Với database đã chạy `supabase/02_attendance_periods.sql`, chạy thêm
+`supabase/03_company32_attendance_period.sql` trước khi dùng kỳ 32 ngày.
+Migration chỉ mở giới hạn riêng cho công ty 32, giữ dữ liệu và quyền truy cập.
+
 ## Xuất bảng công HR31
 
 Ở trang Chấm công & Lương, nút **Tải Excel** dùng mẫu bảng tổng hợp riêng khi ID

@@ -14,7 +14,8 @@ import {
   normalizeAttendanceShiftSettings,
   resolveAttendanceShift
 } from '../utils/attendanceShift'
-import { parseManualWorkdayInput, updateManualWorkdays } from '../utils/attendanceManual'
+import { manualWorkdayForDate, parseManualWorkdayInput, updateManualWorkdays } from '../utils/attendanceManual'
+import { usesCustomAttendancePeriod } from '../utils/attendanceCompanyPolicy'
 import {
   describeDayWorkFormula,
   getAttendanceHoliday,
@@ -285,7 +286,7 @@ function AttendancePreview() {
       let calcTotal = 0
       monthDaysHeader.forEach(({ day, dayStr, date: dateKey, isHoliday, holidayName }) => {
         const dayObj = r.days?.get ? r.days.get(dateKey) : (r.days?.[dateKey] || null)
-        const manualWorkday = manualWorkdays[String(r.employeeId)]?.[String(day)]
+        const manualWorkday = manualWorkdayForDate(manualWorkdays[String(r.employeeId)], dateKey, activePeriod)
         let code = ''
         if (dayObj) {
           code = String(dayCode(dayObj) || (dayObj.workdays > 0 ? dayObj.workdays : '') || '')
@@ -781,7 +782,7 @@ function AttendancePreview() {
     const employeeKey = String(employeeId)
     const savingKey = `${employeeKey}:${day}`
     const previous = manualWorkdays
-    const next = updateManualWorkdays(previous, employeeKey, day, parsed.value)
+    const next = updateManualWorkdays(previous, employeeKey, day, parsed.value, activePeriod)
     setManualWorkdays(next)
     setManualSavingKey(savingKey)
     setManualNotice('')
@@ -1355,10 +1356,10 @@ function AttendancePreview() {
                         <ManualWorkdayInput
                           value={item.manualWorkday !== undefined ? item.manualWorkday : item.workdays}
                           isManual={item.manualWorkday !== undefined}
-                          disabled={deleting || manualSavingKey === `${String(detailRow.employeeId)}:${item.day}`}
+                          disabled={deleting || manualSavingKey === `${String(detailRow.employeeId)}:${usesCustomAttendancePeriod(companyId) ? item.date : item.day}`}
                           employeeName={detailRow.employeeName}
                           date={item.date}
-                          onSave={value => handleSaveManualWorkday(detailRow.employeeId, item.day, value)}
+                          onSave={value => handleSaveManualWorkday(detailRow.employeeId, usesCustomAttendancePeriod(companyId) ? item.date : item.day, value)}
                         />
                       ) : (item.workdays !== '' ? item.workdays : '—')}
                     </td>
@@ -1502,10 +1503,10 @@ function AttendancePreview() {
                                 <ManualWorkdayInput
                                   value={cell.isManual ? cell.manualWorkday : (cell.workdays !== '' ? cell.workdays : val)}
                                   isManual={cell.isManual}
-                                  disabled={deleting || manualSavingKey === `${String(emp.employeeId)}:${d.day}`}
+                                  disabled={deleting || manualSavingKey === `${String(emp.employeeId)}:${usesCustomAttendancePeriod(companyId) ? d.date : d.day}`}
                                   employeeName={emp.name}
                                   date={d.date}
-                                  onSave={value => handleSaveManualWorkday(emp.employeeId, d.day, value)}
+                                  onSave={value => handleSaveManualWorkday(emp.employeeId, usesCustomAttendancePeriod(companyId) ? d.date : d.day, value)}
                                 />
                               ) : (
                                 <>

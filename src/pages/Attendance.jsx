@@ -34,7 +34,9 @@ import { useCompany } from '../contexts/CompanyContext'
 import { prorateMonthlySalary } from '../utils/attendanceCalculations'
 import { normalizeAttendanceShiftSettings } from '../utils/attendanceShift'
 import { getAttendancePeriod } from '../services/attendancePeriods'
-import { attendancePeriodDates, calendarAttendancePeriod, dateInAttendancePeriod } from '../utils/attendancePeriod'
+import { attendanceDateForDay, attendancePeriodDates, calendarAttendancePeriod, dateInAttendancePeriod } from '../utils/attendancePeriod'
+import { manualWorkdayForDate } from '../utils/attendanceManual'
+import { usesCustomAttendancePeriod } from '../utils/attendanceCompanyPolicy'
 
 let XLSX = null
 const ensureXlsx = async () => {
@@ -2252,9 +2254,9 @@ function Attendance() {
                               .map(d => parseInt(d.trim()))
                               .filter(n => !isNaN(n))
 
-                            if (permissionDays.includes(day)) {
+                            if (permissionDays.includes(day) && attendanceDateForDay(activeAttendancePeriod, day) === dateStr) {
                               // Force 1 workday OR Manual Value
-                              const manualVal = manualWorkdays[emp.id]?.[day]
+                              const manualVal = manualWorkdayForDate(manualWorkdays[emp.id], dateStr, activeAttendancePeriod)
                               val = (manualVal !== undefined && manualVal !== null) ? Number(manualVal) : 1
 
                               // Render Input for Manual Edit
@@ -2264,7 +2266,7 @@ function Attendance() {
                                   step="0.5"
                                   value={val}
                                   onFocus={(e) => e.target.select()}
-                                  onSave={(val) => saveManualWorkday(emp.id, day, val)}
+                                  onSave={(val) => saveManualWorkday(emp.id, usesCustomAttendancePeriod(companyId) ? dateStr : day, val)}
                                   className="form-control form-control-sm"
                                   style={{
                                     width: '45px',

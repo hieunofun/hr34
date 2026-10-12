@@ -22,7 +22,7 @@ export async function listAttendancePeriods(companyId) {
 export async function confirmAttendancePeriod(companyId, period) {
   const tenantId = requireTenantCompanyId(companyId)
   const existing = await listAttendancePeriods(tenantId)
-  const valid = validateAttendancePeriod(period, existing)
+  const valid = validateAttendancePeriod(period, existing, tenantId)
   const { data, error } = await supabase.from('attendance_periods').upsert({
     company_id: tenantId,
     month_key: valid.month,

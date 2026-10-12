@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS public.attendance_periods (
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT attendance_periods_pk PRIMARY KEY (company_id, month_key),
   CONSTRAINT attendance_periods_dates CHECK (
-    start_date <= end_date AND end_date - start_date BETWEEN 0 AND 30
+    start_date <= end_date AND end_date - start_date BETWEEN 0 AND
+      CASE WHEN company_id = '00000000-0000-0000-0000-000000000032'::uuid THEN 31 ELSE 30 END
     AND to_char(end_date, 'YYYY-MM') = month_key
   ),
   CONSTRAINT attendance_periods_no_overlap EXCLUDE USING gist (

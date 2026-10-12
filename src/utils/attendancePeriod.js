@@ -1,3 +1,5 @@
+import { maxAttendancePeriodDays } from './attendanceCompanyPolicy.js'
+
 const MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -27,12 +29,19 @@ export const attendancePeriodDates = period => {
   const dates = []
   for (let date = period.startDate; date <= period.endDate; date = nextAttendanceDate(date)) {
     dates.push(date)
-    if (dates.length > 31) throw new Error('Kỳ công tối đa 31 ngày để khớp mẫu bảng công.')
+    if (dates.length > 32) throw new Error('Kỳ công tối đa 32 ngày.')
   }
   return dates
 }
 
-export const validateAttendancePeriod = (period, existing = []) => {
+export const attendancePeriodDayCount = period => {
+  if (!isValidAttendanceDate(period?.startDate) || !isValidAttendanceDate(period?.endDate) ||
+      period.startDate > period.endDate) return 0
+  return Math.round((Date.parse(`${period.endDate}T00:00:00Z`) -
+    Date.parse(`${period.startDate}T00:00:00Z`)) / 86400000) + 1
+}
+
+export const validateAttendancePeriod = (period, existing = [], companyId = period?.companyId) => {
   const month = String(period?.month || '')
   if (!MONTH_RE.test(month)) throw new Error('Tháng kỳ công phải có dạng YYYY-MM.')
   const startDate = String(period?.startDate || '')
@@ -41,7 +50,9 @@ export const validateAttendancePeriod = (period, existing = []) => {
     throw new Error('Ngày bắt đầu hoặc kết thúc kỳ công không hợp lệ.')
   }
   if (endDate.slice(0, 7) !== month) throw new Error('Ngày kết thúc phải thuộc tháng/năm kỳ công.')
-  attendancePeriodDates({ startDate, endDate })
+  const days = attendancePeriodDayCount({ startDate, endDate })
+  const maxDays = maxAttendancePeriodDays(companyId)
+  if (days > maxDays) throw new Error(`Kỳ đã chọn có ${days} ngày (tính cả ngày đầu và cuối). Công ty này cho phép tối đa ${maxDays} ngày.`)
   const overlap = existing.find(item => item.month !== month &&
     startDate <= item.endDate && endDate >= item.startDate)
   if (overlap) throw new Error(`Kỳ công trùng khoảng với tháng ${overlap.month}.`)
@@ -60,7 +71,15 @@ export const attendanceMonthForDate = (date, periods = []) => {
 }
 
 export const attendanceDateForDay = (period, day) =>
-  attendancePeriodDates(period).find(date => Number(date.slice(8, 10)) === Number(day)) || null
+  isValidAttendanceDate(day)
+    ? (dateInAttendancePeriod(day, period) ? day : null)
+    : attendancePeriodDates(period).find(date => Number(date.slice(8, 10)) === Number(day)) || null
+
+export const selectAttendanceImportLogs = (preview, period, usePeriod) => {
+  const logs = preview?.logs || []
+  if (preview?.isReconcileMode || !usePeriod) return logs
+  return period ? logs.filter(log => dateInAttendancePeriod(log.date, period)) : []
+}
 
 export const resolveMatrixAttendanceDates = (columns, monthHint) => {
   const target = calendarAttendancePeriod(monthHint)
@@ -85,7 +104,7 @@ export const countAttendancePeriodLogs = (logs, period) => ({
   outside: logs.filter(log => !dateInAttendancePeriod(log.date, period)).length
 })
 
-export const suggestAttendancePeriod = ({ logs = [], existing = [], monthHint = '', forceMonth = false }) => {
+export const suggestAttendancePeriod = ({ logs = [], existing = [], monthHint = '', forceMonth = false, filePeriod = null }) => {
   const validDates = logs.map(log => String(log.date || '').slice(0, 10))
     .filter(isValidAttendanceDate).sort()
   if (!validDates.length) throw new Error('Excel không có ngày chấm công hợp lệ.')
@@ -110,6 +129,11 @@ export const suggestAttendancePeriod = ({ logs = [], existing = [], monthHint = 
     : (crossCandidates.at(-1) || [...monthCounts].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0]))[0][0])
   const saved = existing.find(item => item.month === month)
   if (saved) return { ...saved, source: 'saved' }
+
+  if (filePeriod?.endDate?.slice(0, 7) === month && attendancePeriodDayCount(filePeriod) > 0 &&
+      attendancePeriodDayCount(filePeriod) <= 32) {
+    return { month, startDate: filePeriod.startDate, endDate: filePeriod.endDate, source: 'file' }
+  }
 
   const previousMonth = nextAttendanceDate(`${month}-01`, -1).slice(0, 7)
   const previous = existing.find(item => item.month === previousMonth)

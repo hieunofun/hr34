@@ -2,20 +2,67 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   attendancePeriodDates,
+  attendancePeriodDayCount,
   attendanceMonthForDate,
   countAttendancePeriodLogs,
   dateInAttendancePeriod,
   isValidAttendanceDate,
   resolveMatrixAttendanceDates,
+  selectAttendanceImportLogs,
   suggestAttendancePeriod,
   validateAttendancePeriod
 } from './attendancePeriod.js'
 import { buildAttendanceSummary } from './attendanceSummary.js'
 import { planAttendanceImport } from '../services/attendanceImportCommit.js'
+import { usesCustomAttendancePeriod } from './attendanceCompanyPolicy.js'
 
 const log = date => ({ employeeId: 'employee-1', date, cong: 1,
   hours: 8, calculationMode: 'source-value', sourceType: 'excel-import' })
 const employee = [{ id: 'employee-1', name: 'Nhân viên A' }]
+
+test('company 32 confirms all 32 inclusive days while other companies keep the old upload flow', () => {
+  const company32 = '00000000-0000-0000-0000-000000000032'
+  const filePeriod = { month: '2026-09', startDate: '2026-08-21', endDate: '2026-09-21' }
+  const logs = attendancePeriodDates(filePeriod).map(log)
+  const suggestion = suggestAttendancePeriod({ logs, monthHint: '2026-09', filePeriod })
+  assert.equal(suggestion.source, 'file')
+  assert.equal(attendancePeriodDayCount(suggestion), 32)
+  assert.deepEqual(validateAttendancePeriod(suggestion, [], company32), filePeriod)
+  assert.equal(usesCustomAttendancePeriod(company32), true)
+  assert.equal(selectAttendanceImportLogs({ logs }, suggestion, true).length, 32)
+
+  for (const number of [22, 23, 31, 33, 34]) {
+    const companyId = `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`
+    assert.equal(usesCustomAttendancePeriod(companyId), false)
+    assert.equal(selectAttendanceImportLogs({ logs }, null, false).length, 32)
+    assert.throws(() => validateAttendancePeriod(suggestion, [], companyId), /tối đa 31 ngày/)
+  }
+  assert.throws(() => validateAttendancePeriod({ ...filePeriod, endDate: '2026-09-22' }, [], company32), /tối đa 32 ngày/)
+  assert.throws(() => validateAttendancePeriod(filePeriod,
+    [{ month: '2026-08', startDate: '2026-07-22', endDate: '2026-08-21' }], company32), /trùng khoảng/)
+})
+
+test('period selection filters only the company 32 import; reconciliation keeps every record', () => {
+  const logs = [log('2026-08-20'), log('2026-08-21'), log('2026-09-21'), log('2026-09-22')]
+  const period = { startDate: '2026-08-21', endDate: '2026-09-21' }
+  assert.deepEqual(selectAttendanceImportLogs({ logs }, period, true).map(item => item.date), ['2026-08-21', '2026-09-21'])
+  assert.equal(selectAttendanceImportLogs({ logs }, period, false).length, 4)
+  assert.equal(selectAttendanceImportLogs({ logs, isReconcileMode: true }, period, true).length, 4)
+  assert.equal(selectAttendanceImportLogs({ logs }, null, true).length, 0)
+})
+
+test('32-day summary keeps both day 21 entries and applies distinct manual overrides', () => {
+  const period = { month: '2026-09', startDate: '2026-08-21', endDate: '2026-09-21' }
+  const row = buildAttendanceSummary({
+    attendanceLogs: [log('2026-08-21'), log('2026-09-21')], employees: employee,
+    month: period.month, attendancePeriod: period,
+    manualWorkdays: { 'employee-1': { 21: 0.5, '2026-08-21': 0.25, '2026-09-21': 0.75, '2026-09-22': 1 } }
+  })[0]
+  assert.equal(row.days.get('2026-08-21').workdays, 0.25)
+  assert.equal(row.days.get('2026-09-21').workdays, 0.75)
+  assert.equal(row.days.has('2026-09-22'), false)
+  assert.equal(row.workdays, 1)
+})
 
 test('company A calendar period counts only 01/09–30/09', () => {
   const period = validateAttendancePeriod({ month: '2026-09', startDate: '2026-09-01', endDate: '2026-09-30' })

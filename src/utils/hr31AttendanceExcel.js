@@ -145,6 +145,7 @@ export const buildHr31AttendanceWorkbook = async (templateData, {
   rows, month, attendancePeriod, attendanceSettings = {}, companyName = '', companyAddress = ''
 }) => {
   const dates = attendancePeriodDates(attendancePeriod || calendarAttendancePeriod(month))
+  if (dates.length > 31) throw new Error('Mẫu HR31 hỗ trợ tối đa 31 ngày trong kỳ công.')
   const sourceWorkbook = new ExcelJS.Workbook()
   await sourceWorkbook.xlsx.load(templateData)
   const template = sourceWorkbook.worksheets[0]
