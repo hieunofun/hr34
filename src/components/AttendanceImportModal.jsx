@@ -13,6 +13,7 @@ import {
 } from '../utils/attendanceMatching'
 import {
   collectAttendancePunches,
+  detectMatrixAttendanceMonth,
   findAttendancePunchColumns,
   parseAttendanceDate,
   parseAttendanceTime
@@ -1305,6 +1306,7 @@ function AttendanceImportModal({
       let result = { logs: [], skipped: [] }
       let detectedDays = []
       let modeLabel = 'Danh sách'
+      let matrixMonth = ''
       let headerRowIdx = -1
       let headers = []
 
@@ -1319,30 +1321,15 @@ function AttendanceImportModal({
         const matrixDayCols = bestDayCols
         detectedDays = matrixDayCols.map(d => d.day).sort((a, b) => a - b)
 
-        // Tự động nhận diện tháng/năm từ date serial trong hàng ngày, hoặc từ tiêu đề file/tên sheet
-        let [year, month] = importMonth.split('-').map(Number)
-        const lastExplicitDate = bestDayCols.filter(column => column.year && column.month).at(-1)
-        if (lastExplicitDate) {
-          year = lastExplicitDate.year
-          month = lastExplicitDate.month
-        }
-
-        const titleSources = [
-          workbook.SheetNames[0],
-          ...jsonData.slice(0, 6).map(r => (r || []).join(' '))
-        ]
-        for (const text of titleSources) {
-          const m = String(text).match(/th[aá]ng\s*(\d{1,2})(?:[\/\-\s]+(\d{4}))?/i)
-          if (m) {
-            const mVal = Number(m[1])
-            if (mVal >= 1 && mVal <= 12) {
-              month = mVal
-              if (m[2]) year = Number(m[2])
-              break
-            }
-          }
-        }
-        setImportMonth(`${year}-${String(month).padStart(2, '0')}`)
+        matrixMonth = detectMatrixAttendanceMonth({
+          columns: matrixDayCols,
+          titleSources: [
+            selectedSheetName,
+            ...jsonData.slice(0, 6).map(row => (row || []).join(' '))
+          ],
+          monthHint: importMonth
+        })
+        const [year, month] = matrixMonth.split('-').map(Number)
 
         // Quét tìm các cột thông tin nhân sự trên toàn bộ các hàng từ 0 đến matrixDayRowIdx + 1
         let codeColIdx = -1, nameColIdx = -1, posColIdx = -1
@@ -1444,13 +1431,13 @@ function AttendanceImportModal({
             monthCounts.set(value, (monthCounts.get(value) || 0) + 1)
           }
         })
-        const detectedImportMonth = Array.from(monthCounts.entries())
+        const detectedImportMonth = matrixMonth || Array.from(monthCounts.entries())
           .sort((left, right) => right[1] - left[1])[0]?.[0] || importMonth
         const periods = await listAttendancePeriods(activeCompanyId)
         const suggestion = suggestAttendancePeriod({
           logs: result.logs,
           existing: periods,
-          monthHint: importMonth || detectedImportMonth
+          monthHint: matrixMonth || importMonth || detectedImportMonth
         })
         setSavedPeriods(periods)
         setPeriodDraft(suggestion)

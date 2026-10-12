@@ -74,6 +74,39 @@ export const parseAttendanceDate = (dateRaw) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10)
 }
 
+/** Prefer dates in the workbook over the month currently open in the app. */
+export const detectMatrixAttendanceMonth = ({ columns = [], titleSources = [], monthHint = '' }) => {
+  const lastExplicitDate = columns.filter(column => column.year && column.month).at(-1)
+  if (lastExplicitDate) {
+    return `${lastExplicitDate.year}-${String(lastExplicitDate.month).padStart(2, '0')}`
+  }
+
+  const titles = titleSources.map(value => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/gi, 'd')
+    .toLowerCase())
+  const datePattern = '(\\d{1,2}[/.\\-]\\d{1,2}[/.\\-]\\d{4}|\\d{4}-\\d{2}-\\d{2})'
+  const rangePattern = new RegExp(`\\btu\\s+(?:ngay\\s+)?${datePattern}\\s+den\\s+(?:ngay\\s+)?${datePattern}`)
+
+  for (const title of titles) {
+    const range = title.match(rangePattern)
+    if (!range) continue
+    const startDate = parseAttendanceDate(range[1])
+    const endDate = parseAttendanceDate(range[2])
+    if (startDate && endDate && startDate <= endDate) return endDate.slice(0, 7)
+  }
+
+  for (const title of titles) {
+    const match = title.match(/\bthang\s*(\d{1,2})(?:[\/\-\s]+(\d{4}))?/)
+    if (!match || Number(match[1]) < 1 || Number(match[1]) > 12) continue
+    const year = match[2] || monthHint.slice(0, 4)
+    return `${year}-${String(Number(match[1])).padStart(2, '0')}`
+  }
+
+  return monthHint
+}
+
 /**
  * Locate only real punch columns (Vào/Ra, Vào 1/Ra 1, ...).
  * Summary columns such as "Vào trễ" and "Ra sớm" must not be treated as punches.
