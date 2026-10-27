@@ -84,15 +84,27 @@ export const buildSourceEmployeeKey = (code, name) => {
   return `${normalizedCode || 'no-code'}::${normalizedName || 'no-name'}`
 }
 
-const scoreCandidate = (sourceCode, sourceName, employee) => {
-  const sourceNameCompact = compactEmployeeIdentity(sourceName)
-  const candidateNameCompact = compactEmployeeIdentity(employeeName(employee))
-  const sourceWithoutMiddle = compactWithoutCommonMiddleNames(sourceName)
-  const candidateWithoutMiddle = compactWithoutCommonMiddleNames(employeeName(employee))
-  const sourceCodeCompact = compactEmployeeIdentity(sourceCode)
-  const candidateCodes = employeeCodes(employee)
-  const sourceGivenName = givenName(sourceName)
-  const candidateGivenName = givenName(employeeName(employee))
+const describeName = name => ({
+  compact: compactEmployeeIdentity(name),
+  withoutMiddle: compactWithoutCommonMiddleNames(name),
+  given: givenName(name)
+})
+
+const describeEmployee = employee => ({
+  employee,
+  ...describeName(employeeName(employee)),
+  codes: employeeCodes(employee)
+})
+
+const scoreCandidate = (sourceCodeCompact, source, candidate) => {
+  const { employee } = candidate
+  const sourceNameCompact = source.compact
+  const candidateNameCompact = candidate.compact
+  const sourceWithoutMiddle = source.withoutMiddle
+  const candidateWithoutMiddle = candidate.withoutMiddle
+  const candidateCodes = candidate.codes
+  const sourceGivenName = source.given
+  const candidateGivenName = candidate.given
   const givenNameCompatible =
     Boolean(sourceGivenName) &&
     Boolean(candidateGivenName) &&
@@ -152,12 +164,7 @@ const scoreCandidate = (sourceCode, sourceName, employee) => {
   }
 }
 
-export const rankEmployeeMatches = (
-  sourceCode,
-  sourceName,
-  employees,
-  branch = ''
-) => {
+const matchingEmployees = (employees, branch) => {
   const normalizedBranch = normalizeEmployeeIdentity(branch)
   const branchEmployees = normalizedBranch
     ? employees.filter(employee =>
@@ -165,10 +172,12 @@ export const rankEmployeeMatches = (
         normalizedBranch
       )
     : employees
-  const candidates = branchEmployees.length > 0 ? branchEmployees : employees
+  return branchEmployees.length > 0 ? branchEmployees : employees
+}
 
-  return candidates
-    .map(employee => scoreCandidate(sourceCode, sourceName, employee))
+const rankCandidates = (sourceCode, source, candidates) =>
+  candidates
+    .map(candidate => scoreCandidate(sourceCode, source, candidate))
     .sort((left, right) =>
       right.score - left.score ||
       Number(right.exactCode && right.exactName) -
@@ -177,7 +186,13 @@ export const rankEmployeeMatches = (
       Number(right.exactCode) - Number(left.exactCode) ||
       Number(right.givenNameCompatible) - Number(left.givenNameCompatible)
     )
-}
+
+export const rankEmployeeMatches = (sourceCode, sourceName, employees, branch = '') =>
+  rankCandidates(
+    compactEmployeeIdentity(sourceCode),
+    describeName(sourceName),
+    matchingEmployees(employees, branch).map(describeEmployee)
+  )
 
 export const matchAttendanceEmployee = (
   sourceCode,
@@ -186,6 +201,10 @@ export const matchAttendanceEmployee = (
   branch = ''
 ) => {
   const ranked = rankEmployeeMatches(sourceCode, sourceName, employees, branch)
+  return matchFromRanked(ranked)
+}
+
+const matchFromRanked = ranked => {
   const best = ranked[0] || null
   const second = ranked[1] || null
   const confidence = best?.score || 0
@@ -212,6 +231,32 @@ export const matchAttendanceEmployee = (
     method: best?.method || 'Không tìm thấy',
     status: autoMatched ? 'matched' : confidence >= 0.6 ? 'review' : 'unmatched',
     candidates: ranked.slice(0, 5)
+  }
+}
+
+// One matcher per roster/branch. Daily rows reuse a source identity instead of
+// repeating fuzzy comparisons against the entire roster. Exact names need only
+// their indexed candidates; duplicate names still require manual review.
+export const createAttendanceEmployeeMatcher = (employees, branch = '') => {
+  const candidates = matchingEmployees(employees, branch).map(describeEmployee)
+  const byName = new Map()
+  for (const candidate of candidates) {
+    if (!candidate.compact) continue
+    if (!byName.has(candidate.compact)) byName.set(candidate.compact, [])
+    byName.get(candidate.compact).push(candidate)
+  }
+  const cache = new Map()
+  return (sourceCode, sourceName) => {
+    const key = buildSourceEmployeeKey(sourceCode, sourceName)
+    if (cache.has(key)) return cache.get(key)
+    const source = describeName(sourceName)
+    const exactNames = byName.get(source.compact)
+    const ranked = rankCandidates(
+      compactEmployeeIdentity(sourceCode), source, exactNames || candidates
+    )
+    const result = matchFromRanked(ranked)
+    cache.set(key, result)
+    return result
   }
 }
 

@@ -8,7 +8,6 @@ import {
   applyEmployeeToAttendanceLog,
   buildSourceEmployeeKey,
   getCanonicalEmployeeCode,
-  matchAttendanceEmployee,
   normalizeEmployeeIdentity
 } from '../utils/attendanceMatching'
 import {
@@ -19,12 +18,13 @@ import {
   parseAttendanceDate,
   parseAttendanceTime
 } from '../utils/attendanceImport'
-import { findDeocaPunchHeader, getDeocaShiftName, parseDeocaPunchSheet } from '../utils/deocaPunchImport'
+import { findDeocaPunchHeader } from '../utils/deocaPunchImport'
+import { createAttendanceImportProcessor } from '../utils/attendanceImportProcessor'
+import { createAttendanceImportWorker } from '../utils/attendanceImportWorkerClient'
 import {
   applyCalculatedAttendanceTiming,
   attendanceTimeToMinutes,
   buildAttendanceShiftSettingsPayload,
-  calculateAttendanceTiming,
   findMissingAttendanceShifts,
   formatAttendanceTime,
   getAttendanceShiftOptions,
@@ -52,7 +52,8 @@ import {
   validateAttendancePeriod
 } from '../utils/attendancePeriod'
 
-const { read, utils, writeFile } = XLSX
+const { utils, writeFile } = XLSX
+const MATCH_PAGE_SIZE = 20
 
 function AttendanceImportModal({
   employees,
@@ -72,6 +73,11 @@ function AttendanceImportModal({
   const [file, setFile] = useState(null)
   const [referenceImage, setReferenceImage] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [previewStage, setPreviewStage] = useState('')
+  const [matchPage, setMatchPage] = useState(1)
+  const [expandedMatchKey, setExpandedMatchKey] = useState('')
+  const previewWorkerRef = useRef(null)
+  const previewRequestRef = useRef(0)
   const importInProgressRef = useRef(false)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiAvailable, setAiAvailable] = useState(null)
@@ -122,6 +128,27 @@ function AttendanceImportModal({
   }, [initialAttendanceSettings])
 
   useEffect(() => {
+    if (!isOpen) {
+      previewRequestRef.current++
+      previewWorkerRef.current?.terminate()
+      previewWorkerRef.current = null
+      setLoading(false)
+    }
+    return () => {
+      previewRequestRef.current++
+      previewWorkerRef.current?.terminate()
+      previewWorkerRef.current = null
+    }
+  }, [isOpen])
+
+  const cancelFilePreview = () => {
+    previewRequestRef.current++
+    previewWorkerRef.current?.terminate()
+    previewWorkerRef.current = null
+    setLoading(false)
+  }
+
+  useEffect(() => {
     if (!isOpen) return
     let cancelled = false
 
@@ -140,247 +167,23 @@ function AttendanceImportModal({
   }, [isOpen])
 
   const handleFileChange = (e) => {
+    cancelFilePreview()
     setFile(e.target.files[0])
     setPreviewData(null)
     setShiftNotice('')
     setPeriodDraft(null)
     setPeriodConfirmed(false)
+    setMatchPage(1)
   }
 
   const parseTime = parseAttendanceTime
 
-  const calculateStats = (timeStrs, employee = {}, log = {}) => {
-    if (!timeStrs || timeStrs.length === 0) return null
-
-    const parsed = timeStrs
-      .map(t => (typeof t === 'object' && t?.str ? t : parseTime(t)))
-      .filter(Boolean)
-
-    if (parsed.length === 0) return null
-
-    // Giữ thứ tự punch từ máy: ca đêm có thể có Vào 22:00 rồi Ra 06:00,
-    // không được sort theo đồng hồ vì sẽ đảo ngược ca.
-    const checkInStr = parsed[0].str
-    const checkOutStr = parsed.length > 1 ? parsed[parsed.length - 1].str : null
-    const outTime = parsed.length > 1 ? parsed[parsed.length - 1] : null
-
-    if (!outTime || parsed.length === 1) {
-      return {
-        checkIn: checkInStr,
-        checkOut: null,
-        hours: 0,
-        status: 'Thiếu ra',
-        lateMinutes: 0,
-        earlyMinutes: 0,
-        punches: parsed.map(p => p.str)
-      }
-    }
-
-    const shift = resolveAttendanceShift(employee, log, attendanceSettings)
-    const metrics = calculateAttendanceMetrics({
-      checkIn: checkInStr,
-      checkOut: checkOutStr,
-      attendanceSettings,
-      shift,
-      standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
-      // Import Excel không tự trừ lunch cứng; nếu doanh nghiệp muốn trừ
-      // khoảng nghỉ thì khai báo rõ trong Cài đặt chấm công.
-      breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
-      autoCalculateOvertime: attendanceSettings?.overtime?.autoCalculate !== false,
-      splitShift: shift?.splitShift
-    })
-    const hours = metrics.hours
-
-    const timing = calculateAttendanceTiming({
-      employee,
-      log,
-      checkIn: checkInStr,
-      checkOut: checkOutStr,
-      attendanceSettings
-    })
-    const lateMinutes = timing.lateMinutes ?? 0
-    const earlyMinutes = timing.earlyMinutes ?? 0
-
-    let status = 'Đủ'
-    const notes = []
-    if (lateMinutes > 0) notes.push(`Muộn ${lateMinutes}p`)
-    if (earlyMinutes > 0) notes.push(`Sớm ${earlyMinutes}p`)
-    if (notes.length > 0) status = notes.join(' & ')
-    if (hours <= 0) status = 'Vắng/Nghỉ'
-
-    return {
-      checkIn: checkInStr,
-      checkOut: checkOutStr,
-      hours,
-      regularWorkdays: metrics.regularWorkdays,
-      overtimeHours: metrics.overtimeHours,
-      status,
-      lateMinutes,
-      earlyMinutes,
-      punches: parsed.map(p => p.str)
-    }
-  }
-
-  const findEmployee = (code, name) => {
-    return matchAttendanceEmployee(code, name, employees, matchBranch).employee
-  }
-
-  const buildFallbackEmployee = (code, name, rowIndex = 0) => {
-    const codeStr = String(code || '').trim()
-    const nameStr = String(name || '').trim()
-    const fallbackCode = codeStr || `ROW${rowIndex + 1}`
-    const fallbackName = nameStr || `NV ${fallbackCode}`
-    const sourceKey = buildSourceEmployeeKey(fallbackCode, fallbackName)
-    return {
-      id: `external:${sourceKey}`,
-      employeeId: fallbackCode,
-      username: fallbackCode,
-      ho_va_ten: fallbackName,
-      name: fallbackName,
-      bo_phan: '',
-      vi_tri: ''
-    }
-  }
-
-  const attachSourceIdentity = (employee, code, name) => ({
-    ...employee,
-    _sourceEmployeeCode: String(code || '').trim(),
-    _sourceEmployeeName: String(name || '').replace(/\s+/g, ' ').trim()
-  })
+  const { calculateStats, findEmployee, buildFallbackEmployee, attachSourceIdentity, buildLog, prepareMatchingPreview } = useMemo(
+    () => createAttendanceImportProcessor({ employees, attendanceSettings, attendanceLogs, matchBranch }),
+    [employees, attendanceSettings, attendanceLogs, matchBranch]
+  )
 
   const parseDateValue = parseAttendanceDate
-
-  const buildLog = (sysEmp, dateStr, stats, extra = {}) => {
-    const baseDate = new Date(`${dateStr}T00:00:00`)
-    const checkInStr = stats.checkIn || extra.vao || ''
-    const checkOutStr = stats.checkOut || extra.ra || ''
-
-    let checkInDate = null
-    if (checkInStr) {
-      const [inH, inM] = String(checkInStr).split(':')
-      checkInDate = new Date(baseDate)
-      checkInDate.setHours(Number(inH), Number(inM) || 0, 0, 0)
-    }
-
-    let checkOutDate = null
-    if (checkOutStr) {
-      const [outH, outM] = String(checkOutStr).split(':')
-      checkOutDate = new Date(baseDate)
-      checkOutDate.setHours(Number(outH), Number(outM) || 0, 0, 0)
-    }
-
-    const hasActualPunchPair = Boolean(checkInStr && checkOutStr && !extra.syntheticPunch)
-    const resolvedShift = resolveAttendanceShift(sysEmp, extra, attendanceSettings)
-    const punchPairs = stats.punchPairs || extra.punchPairs || []
-    const metrics = calculateAttendanceMetrics({
-      log: extra,
-      checkIn: checkInStr,
-      checkOut: checkOutStr,
-      attendanceSettings,
-      shift: resolvedShift,
-      standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
-      breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
-      autoCalculateOvertime: attendanceSettings?.overtime?.autoCalculate !== false,
-      punchPairs,
-      splitShift: resolvedShift?.splitShift,
-      fallbackHours: Number(extra.hours ?? stats.hours ?? 0) || 0,
-      fallbackWorkdays: extra.cong ?? stats.regularWorkdays
-    })
-    const hours = hasActualPunchPair ? metrics.hours : Number(extra.hours ?? stats.hours ?? 0) || 0
-    const gioPlus = Number(extra.gioPlus ?? 0) || 0
-    const timing = calculateAttendanceTiming({
-      employee: sysEmp,
-      log: extra,
-      checkIn: checkInStr,
-      checkOut: checkOutStr,
-      attendanceSettings
-    })
-    const dayNames = ['Chủ nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7']
-
-    return {
-      employeeId: sysEmp.id,
-      employeeCode:
-        extra.employeeCode ||
-        sysEmp._sourceEmployeeCode ||
-        sysEmp.employeeId ||
-        sysEmp.username ||
-        '',
-      employeeName:
-        extra.employeeName ||
-        sysEmp._sourceEmployeeName ||
-        sysEmp.ho_va_ten ||
-        sysEmp.name ||
-        '',
-      sourceEmployeeCode:
-        sysEmp._sourceEmployeeCode ||
-        extra.employeeCode ||
-        sysEmp.employeeId ||
-        '',
-      sourceEmployeeName:
-        sysEmp._sourceEmployeeName ||
-        extra.employeeName ||
-        sysEmp.ho_va_ten ||
-        sysEmp.name ||
-        '',
-      machineName:
-        extra.machineName ||
-        sysEmp._sourceEmployeeName ||
-        extra.employeeName ||
-        sysEmp.ho_va_ten ||
-        sysEmp.name ||
-        '',
-      tenTheoMayChamCong:
-        extra.machineName ||
-        sysEmp._sourceEmployeeName ||
-        extra.employeeName ||
-        sysEmp.ho_va_ten ||
-        sysEmp.name ||
-        '',
-      department: extra.department || sysEmp.bo_phan || '',
-      position: extra.position || sysEmp.vi_tri || '',
-      date: dateStr,
-      dayOfWeek: extra.dayOfWeek || dayNames[baseDate.getDay()] || '',
-      timestamp: baseDate.getTime(),
-      checkIn: checkInDate ? checkInDate.toISOString() : null,
-      checkOut: checkOutDate ? checkOutDate.toISOString() : null,
-      vao: checkInStr,
-      ra: checkOutStr,
-      // Có punch thật thì luôn dùng phút thực tế; cong Excel cũ chỉ giữ cho
-      // các dòng mã công không có giờ vào/ra.
-      cong: Number(hasActualPunchPair
-        ? metrics.regularWorkdays
-        : metrics.regularWorkdays) || 0,
-      hours,
-      gio: hours,
-      congPlus: Number(extra.congPlus ?? 0) || 0,
-      gioPlus,
-      lateMinutes: timing.lateMinutes ?? 0,
-      earlyMinutes: timing.earlyMinutes ?? 0,
-      vaoTre: timing.lateMinutes ?? 0,
-      raSom: timing.earlyMinutes ?? 0,
-      tc1: Number(extra.tc1 ?? 0) || 0,
-      tc2: Number(extra.tc2 ?? 0) || 0,
-      tc3: Number(extra.tc3 ?? 0) || 0,
-      shiftName: extra.shiftName || '',
-      tenCa: extra.shiftName || '',
-      kyHieu: extra.kyHieu || stats.status || '',
-      kyHieuPlus: extra.kyHieuPlus || '',
-      // Tổng giờ cũng dựa trên số giờ thực tế vừa tính, không lấy giá trị
-      // tổng đã làm tròn sẵn trong file nguồn.
-      tongGio: hours + gioPlus,
-      status: extra.kyHieu || stats.status || '',
-      workedMinutes: metrics.workedMinutes,
-      regularMinutes: metrics.regularMinutes,
-      overtimeMinutes: metrics.overtimeMinutes,
-      overtimeAutoDisabled: extra.overtimeAutoDisabled !== undefined
-        ? Boolean(extra.overtimeAutoDisabled)
-        : (hasActualPunchPair ? false : Boolean(extra.syntheticPunch)),
-      syntheticPunch: Boolean(extra.syntheticPunch),
-      punches: stats.punches || [],
-      punchPairs,
-      importFormat: extra.importFormat || ''
-    }
-  }
 
   /** Format đầy đủ theo bảng chấm công công ty */
   const processFullAttendanceFormat = (jsonData, headers, headerRowIdx) => {
@@ -501,64 +304,6 @@ function AttendanceImportModal({
   }
 
   /** Phiếu chấm công DEOCA: tên, ID, bộ phận, ngày và các giờ trong một ô Ghi. */
-  const processDeocaPunchFormat = (jsonData, header) => {
-    const parsed = parseDeocaPunchSheet(jsonData, header)
-    const logs = []
-    const skipped = [...parsed.skipped]
-
-    parsed.records.forEach(record => {
-      if (!record.check_in) {
-        skipped.push(`Dòng ${record.source_row}: không có giờ quẹt thẻ hợp lệ.`)
-        return
-      }
-
-      const employeeName = `${record.first_name} ${record.last_name}`.replace(/\s+/g, ' ').trim()
-      const shiftName = getDeocaShiftName(record.department_location)
-      const sysEmp = attachSourceIdentity(
-        findEmployee(record.employee_code, employeeName) ||
-          buildFallbackEmployee(record.employee_code, employeeName, record.source_row - 1),
-        record.employee_code,
-        employeeName
-      )
-      const stats = calculateStats(
-        record.check_out ? [record.check_in, record.check_out] : [record.check_in],
-        sysEmp,
-        { department: record.department_location, shiftName }
-      )
-      if (!stats) return
-
-      logs.push({
-        ...buildLog(sysEmp, record.attendance_date, {
-          ...stats,
-          punches: record.punches,
-          punchPairs: [{ checkIn: record.check_in, checkOut: record.check_out }]
-        }, {
-          employeeCode: record.employee_code,
-          employeeName,
-          machineName: employeeName,
-          department: record.department_location,
-          shiftName,
-          importFormat: 'deoca-punch',
-          dayOfWeek: record.weekday,
-          vao: record.check_in,
-          ra: record.check_out
-        }),
-        first_name: record.first_name,
-        last_name: record.last_name,
-        employee_code: record.employee_code,
-        department_location: record.department_location,
-        attendance_date: record.attendance_date,
-        weekday: record.weekday,
-        punch_count: record.punch_count,
-        raw_punch_times: record.raw_punch_times,
-        rawVal: record.raw_punch_times,
-        source_row: record.source_row
-      })
-    })
-
-    return { logs, skipped }
-  }
-
   /** Format mới: Mã NV | Tên NV | Phòng ban | Ngày | Lần 1 ... Lần 7 */
   const processPunchLogFormat = (jsonData, headers, headerRowIdx) => {
     const codeIdx = headers.findIndex(h =>
@@ -947,121 +692,6 @@ function AttendanceImportModal({
     return 'list'
   }
 
-  const prepareMatchingPreview = (
-    logs,
-    metadata = {},
-    preserveExistingMatches = false
-  ) => {
-    const groups = new Map()
-
-    // Tự động ghi nhớ các ánh xạ nhân viên đã từng được ghép trong attendanceLogs
-    const previousMatchFromLogs = new Map()
-    attendanceLogs.forEach(item => {
-      const sCode = item.sourceEmployeeCode || item.employeeCode || ''
-      const sName = item.sourceEmployeeName || item.employeeName || item.machineName || ''
-      if ((sCode || sName) && item.employeeId && !String(item.employeeId).startsWith('external:')) {
-        const sKey = buildSourceEmployeeKey(sCode, sName)
-        const emp = employeesById.get(String(item.employeeId))
-        if (emp && !previousMatchFromLogs.has(sKey)) {
-          previousMatchFromLogs.set(sKey, emp)
-        }
-      }
-    })
-
-    logs.forEach(log => {
-      const sourceCode =
-        log.sourceEmployeeCode ||
-        log.employeeCode ||
-        ''
-      const sourceName =
-        log.sourceEmployeeName ||
-        log.employeeName ||
-        log.machineName ||
-        log.tenTheoMayChamCong ||
-        ''
-      const sourceKey = buildSourceEmployeeKey(sourceCode, sourceName)
-
-      if (!groups.has(sourceKey)) {
-        const rememberedEmployee = previousMatchFromLogs.get(sourceKey)
-        const currentEmployee = preserveExistingMatches
-          ? employeesById.get(String(log.employeeId))
-          : (rememberedEmployee || null)
-        const smartMatch = currentEmployee
-          ? {
-              employee: currentEmployee,
-              suggestedEmployee: currentEmployee,
-              confidence: 1,
-              gap: 1,
-              method: rememberedEmployee ? 'Đã ghi nhớ từ lần ghép trước' : 'Đã gắn với hồ sơ Lumi',
-              status: 'matched',
-              candidates: [{ employee: currentEmployee, score: 1 }]
-            }
-          : matchAttendanceEmployee(
-              sourceCode,
-              sourceName,
-              employees,
-              matchBranch
-            )
-
-        groups.set(sourceKey, {
-          key: sourceKey,
-          sourceCode: String(sourceCode || '').trim(),
-          sourceName: String(sourceName || '').replace(/\s+/g, ' ').trim(),
-          rowCount: 0,
-          selectedEmployeeId: smartMatch.employee?.id || '',
-          suggestedEmployeeId: smartMatch.suggestedEmployee?.id || '',
-          confidence: smartMatch.confidence,
-          gap: smartMatch.gap,
-          method: smartMatch.method,
-          status: smartMatch.status,
-          candidates: smartMatch.candidates
-        })
-      }
-
-      groups.get(sourceKey).rowCount += 1
-    })
-
-    const matchGroups = Array.from(groups.values())
-    const groupByKey = new Map(matchGroups.map(group => [group.key, group]))
-    const matchedLogs = logs.map(log => {
-      const sourceCode = log.sourceEmployeeCode || log.employeeCode || ''
-      const sourceName =
-        log.sourceEmployeeName ||
-        log.employeeName ||
-        log.machineName ||
-        log.tenTheoMayChamCong ||
-        ''
-      const sourceKey = buildSourceEmployeeKey(sourceCode, sourceName)
-      const group = groupByKey.get(sourceKey)
-      const selectedEmployee = employeesById.get(String(group?.selectedEmployeeId))
-      const preparedLog = {
-        ...log,
-        sourceEmployeeCode: sourceCode,
-        sourceEmployeeName: sourceName,
-        _sourceEmployeeKey: sourceKey,
-        _originalEmployeeId: log.employeeId || '',
-        _sourceDepartment: log.department || log.phongBan || '',
-        _sourcePosition: log.position || log.chucVu || ''
-      }
-
-      return selectedEmployee
-        ? applyCalculatedAttendanceTiming(
-            applyEmployeeToAttendanceLog(preparedLog, selectedEmployee),
-            selectedEmployee,
-            attendanceSettings
-          )
-        : preparedLog
-    })
-
-    return {
-      ...metadata,
-      count: matchedLogs.length,
-      uniqueEmployeeCount: matchGroups.length,
-      matchGroups,
-      logs: matchedLogs
-    }
-  }
-
   const handleMatchChange = (sourceKey, employeeId, method = 'Người dùng xác nhận') => {
     setPreviewData(previous => {
       if (!previous) return previous
@@ -1117,6 +747,7 @@ function AttendanceImportModal({
       return
     }
 
+    setMatchPage(1)
     setPreviewData(
       prepareMatchingPreview(
         attendanceLogs,
@@ -1216,10 +847,19 @@ function AttendanceImportModal({
       return
     }
 
+    if (loading) return
+    const requestId = ++previewRequestRef.current
+    let importWorker
     setLoading(true)
+    setPreviewStage('Đang đọc file...')
     try {
       const data = await file.arrayBuffer()
-      const workbook = read(data, { type: 'array' })
+      if (requestId !== previewRequestRef.current) return
+      importWorker = createAttendanceImportWorker()
+      previewWorkerRef.current = importWorker
+      const sheets = await importWorker.request('read', { data }, [data])
+      if (requestId !== previewRequestRef.current) return
+      setPreviewStage('Đang đối sánh nhân viên...')
 
       // Helper trích xuất ngày từ ô (hỗ trợ cả số nguyên 1..31, text '01'..'31', date serial Excel 46235..46265, và Date objects)
       const extractDayFromCell = (cell) => {
@@ -1257,15 +897,12 @@ function AttendanceImportModal({
       }
 
       // Chọn sheet tốt nhất: ưu tiên sheet chứa ma trận ngày hoặc nhiều dòng dữ liệu chấm công nhất
-      let worksheet = workbook.Sheets[workbook.SheetNames[0]]
-      let jsonData = utils.sheet_to_json(worksheet, { header: 1, raw: true, defval: '' })
-      let selectedSheetName = workbook.SheetNames[0]
+      let jsonData = sheets[0]?.rows || []
+      let selectedSheetName = sheets[0]?.name
 
-      if (workbook.SheetNames.length > 1) {
+      if (sheets.length > 1) {
         let maxScore = -1
-        for (const sName of workbook.SheetNames) {
-          const sWs = workbook.Sheets[sName]
-          const sData = utils.sheet_to_json(sWs, { header: 1, raw: true, defval: '' })
+        for (const { name: sName, rows: sData } of sheets) {
           if (!sData || sData.length === 0) continue
 
           let dayColsInSheet = 0
@@ -1280,7 +917,6 @@ function AttendanceImportModal({
             : dayColsInSheet >= 7 ? 10000 + dayColsInSheet : sData.length
           if (score > maxScore) {
             maxScore = score
-            worksheet = sWs
             jsonData = sData
             selectedSheetName = sName
           }
@@ -1318,7 +954,20 @@ function AttendanceImportModal({
       const deocaHeader = findDeocaPunchHeader(jsonData)
       if (deocaHeader) {
         format = 'deoca-punch'
-        result = processDeocaPunchFormat(jsonData, deocaHeader)
+        result = await importWorker.request('deoca', {
+          sheetName: selectedSheetName,
+          options: {
+            employees, attendanceSettings, matchBranch,
+            attendanceLogs: attendanceLogs.map(log => ({
+              employeeId: log.employeeId,
+              sourceEmployeeCode: log.sourceEmployeeCode, employeeCode: log.employeeCode,
+              sourceEmployeeName: log.sourceEmployeeName, employeeName: log.employeeName,
+              machineName: log.machineName
+            }))
+          }
+        })
+        if (requestId !== previewRequestRef.current) return
+        result.logs = result.preview.logs
         modeLabel = 'Phiếu chấm công DEOCA'
       } else if (bestDayCols.length >= 7) {
         format = 'matrix'
@@ -1438,6 +1087,7 @@ function AttendanceImportModal({
         const detectedImportMonth = matrixMonth || Array.from(monthCounts.entries())
           .sort((left, right) => right[1] - left[1])[0]?.[0] || importMonth
         const periods = usePeriod ? await listAttendancePeriods(activeCompanyId) : []
+        if (requestId !== previewRequestRef.current) return
         const suggestion = usePeriod ? suggestAttendancePeriod({
           logs: result.logs,
           existing: periods,
@@ -1448,28 +1098,33 @@ function AttendanceImportModal({
         setPeriodDraft(suggestion)
         setPeriodConfirmed(false)
         setImportMonth(detectedImportMonth)
-        setPreviewData(
-          prepareMatchingPreview(result.logs, {
-            modeLabel,
-            isMatrixMode: format === 'matrix',
-            detectedDays,
-            skipped: result.skipped,
-            invalidDateRows: [
-              ...result.skipped.filter(message => /ngày không hợp lệ|ngày hợp lệ/i.test(message)),
-              ...result.logs.filter(log => !isValidAttendanceDate(String(log.date || '')))
-                .map(log => `Ngày không hợp lệ: ${log.date}`)
-            ],
-            isReconcileMode: false,
-            importMonth: detectedImportMonth
-          })
-        )
+        const metadata = {
+          modeLabel,
+          isMatrixMode: format === 'matrix',
+          detectedDays,
+          skipped: result.skipped,
+          invalidDateRows: [
+            ...result.skipped.filter(message => /ngày không hợp lệ|ngày hợp lệ/i.test(message)),
+            ...result.logs.filter(log => !isValidAttendanceDate(String(log.date || '')))
+              .map(log => `Ngày không hợp lệ: ${log.date}`)
+          ],
+          isReconcileMode: false,
+          importMonth: detectedImportMonth
+        }
+        setMatchPage(1)
+        setPreviewData(result.preview
+          ? { ...result.preview, ...metadata }
+          : prepareMatchingPreview(result.logs, metadata))
       }
     } catch (error) {
+      if (error.name === 'AbortError' || requestId !== previewRequestRef.current) return
       alert('Lỗi: ' + error.message)
       console.error(error)
       setPreviewData(null)
     } finally {
-      setLoading(false)
+      importWorker?.terminate()
+      if (previewWorkerRef.current === importWorker) previewWorkerRef.current = null
+      if (requestId === previewRequestRef.current) setLoading(false)
     }
   }
 
@@ -1804,6 +1459,7 @@ function AttendanceImportModal({
   }
 
   const handleClose = () => {
+    cancelFilePreview()
     setFile(null)
     setReferenceImage(null)
     setPreviewData(null)
@@ -1813,31 +1469,40 @@ function AttendanceImportModal({
     onClose()
   }
 
+  const { activeMatchGroups, previewMissingShifts, matchedEmployeeCount, skippedEmployeeCount,
+    unresolvedEmployeeCount, previewDates, periodCounts } = useMemo(() => {
+    const previewSelectedLogs = selectAttendanceImportLogs(previewData, periodDraft, usePeriod)
+    const previewSourceKeys = new Set(previewSelectedLogs.map(log => log._sourceEmployeeKey))
+    const activeMatchGroups = (previewData?.matchGroups || []).filter(group => previewSourceKeys.has(group.key))
+    const skippedPreviewSourceKeys = new Set(activeMatchGroups
+      .filter(group => group.status === 'skipped')
+      .map(group => group.key))
+    const previewMissingShifts = findMissingAttendanceShifts(
+      previewSelectedLogs, attendanceSettings, skippedPreviewSourceKeys
+    )
+    const matchedEmployeeCount =
+      activeMatchGroups.filter(
+        group => group.selectedEmployeeId && group.status !== 'skipped'
+      ).length || 0
+    const skippedEmployeeCount =
+      activeMatchGroups.filter(group => group.status === 'skipped').length || 0
+    const unresolvedEmployeeCount =
+      activeMatchGroups.length -
+      matchedEmployeeCount -
+      skippedEmployeeCount
+    const previewDates = (previewData?.logs || []).map(log => String(log.date || '').slice(0, 10)).sort()
+    const periodCounts = periodDraft && previewData
+      ? countAttendancePeriodLogs(previewData.logs, periodDraft)
+      : { inside: 0, outside: 0 }
+    return { activeMatchGroups, previewMissingShifts, matchedEmployeeCount, skippedEmployeeCount,
+      unresolvedEmployeeCount, previewDates, periodCounts }
+  }, [previewData, periodDraft, usePeriod, attendanceSettings])
+  const matchPageCount = Math.max(1, Math.ceil(activeMatchGroups.length / MATCH_PAGE_SIZE))
+  const currentMatchPage = Math.min(matchPage, matchPageCount)
+  const visibleMatchGroups = activeMatchGroups.slice((currentMatchPage - 1) * MATCH_PAGE_SIZE, currentMatchPage * MATCH_PAGE_SIZE)
+
   if (!isOpen) return null
 
-  const previewSelectedLogs = selectAttendanceImportLogs(previewData, periodDraft, usePeriod)
-  const previewSourceKeys = new Set(previewSelectedLogs.map(log => log._sourceEmployeeKey))
-  const activeMatchGroups = (previewData?.matchGroups || []).filter(group => previewSourceKeys.has(group.key))
-  const skippedPreviewSourceKeys = new Set(activeMatchGroups
-    .filter(group => group.status === 'skipped')
-    .map(group => group.key))
-  const previewMissingShifts = findMissingAttendanceShifts(
-    previewSelectedLogs, attendanceSettings, skippedPreviewSourceKeys
-  )
-  const matchedEmployeeCount =
-    activeMatchGroups.filter(
-      group => group.selectedEmployeeId && group.status !== 'skipped'
-    ).length || 0
-  const skippedEmployeeCount =
-    activeMatchGroups.filter(group => group.status === 'skipped').length || 0
-  const unresolvedEmployeeCount =
-    activeMatchGroups.length -
-    matchedEmployeeCount -
-    skippedEmployeeCount
-  const previewDates = (previewData?.logs || []).map(log => String(log.date || '').slice(0, 10)).sort()
-  const periodCounts = periodDraft && previewData
-    ? countAttendancePeriodLogs(previewData.logs, periodDraft)
-    : { inside: 0, outside: 0 }
   const periodDayCount = attendancePeriodDayCount(periodDraft)
   let periodError = ''
   if (usePeriod && periodDraft) {
@@ -1865,6 +1530,7 @@ function AttendanceImportModal({
                 <label>Chi nhánh dùng để đối sánh nhân sự</label>
                 <select
                   value={matchBranch}
+                  disabled={loading}
                   onChange={(e) => setMatchBranch(e.target.value)}
                   style={{ width: '100%', padding: '10px', marginBottom: '12px' }}
                 >
@@ -1879,6 +1545,7 @@ function AttendanceImportModal({
                 <input
                   type="month"
                   value={importMonth}
+                  disabled={loading}
                   onChange={(e) => setImportMonth(e.target.value)}
                   style={{ width: '100%', marginBottom: '15px' }}
                 />
@@ -1935,7 +1602,7 @@ function AttendanceImportModal({
                   type="button"
                   className="btn btn-warning"
                   onClick={handleReconcileExisting}
-                  disabled={!attendanceLogs.length}
+                  disabled={loading || !attendanceLogs.length}
                 >
                   <i className="fas fa-link"></i>
                   {` Khớp mã nhân viên (${attendanceLogs.length} dòng)`}
@@ -2118,9 +1785,14 @@ function AttendanceImportModal({
                     </tr>
                   </thead>
                   <tbody>
-                    {activeMatchGroups.map(group => {
+                    {visibleMatchGroups.map(group => {
                       const suggestedEmployee = employeesById.get(String(group.suggestedEmployeeId))
                       const selectedEmployee = employeesById.get(String(group.selectedEmployeeId))
+                      const matchOptions = expandedMatchKey === group.key
+                        ? employeesForMatching
+                        : [selectedEmployee || suggestedEmployee].filter(Boolean)
+                      const visibleOptions = selectedEmployee && !matchOptions.some(employee => employee.id === selectedEmployee.id)
+                        ? [selectedEmployee, ...matchOptions] : matchOptions
                       const statusColor = group.status === 'skipped'
                         ? '#6b7280'
                         : group.selectedEmployeeId
@@ -2150,6 +1822,9 @@ function AttendanceImportModal({
                             <select
                               value={group.selectedEmployeeId}
                               onChange={(e) => handleMatchChange(group.key, e.target.value)}
+                              onFocus={() => setExpandedMatchKey(group.key)}
+                              onBlur={() => setExpandedMatchKey('')}
+                              aria-label={`Hồ sơ Lumi cho ${group.sourceCode || group.sourceName}`}
                               style={{
                                 width: '100%',
                                 padding: '7px',
@@ -2158,7 +1833,7 @@ function AttendanceImportModal({
                             >
                               <option value="">-- Chọn nhân viên Lumi --</option>
                               <option value="__skip__">-- Không có trong Lumi (bỏ qua) --</option>
-                              {employeesForMatching.map(employee => (
+                              {visibleOptions.map(employee => (
                                 <option key={employee.id} value={employee.id}>
                                   {employee.ho_va_ten || employee.name || employee.id}
                                   {employee.employeeId || employee.username
@@ -2192,6 +1867,18 @@ function AttendanceImportModal({
                   </tbody>
                 </table>
               </div>
+              {matchPageCount > 1 && (
+                <nav aria-label="Phân trang đối sánh nhân viên" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginTop: '8px' }}>
+                  <span>{activeMatchGroups.length.toLocaleString('vi-VN')} nhân viên</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <button type="button" className="btn" aria-label="Trang trước" disabled={currentMatchPage === 1}
+                      onClick={() => { setExpandedMatchKey(''); setMatchPage(currentMatchPage - 1) }}>‹</button>
+                    <span aria-live="polite">{currentMatchPage}/{matchPageCount}</span>
+                    <button type="button" className="btn" aria-label="Trang sau" disabled={currentMatchPage === matchPageCount}
+                      onClick={() => { setExpandedMatchKey(''); setMatchPage(currentMatchPage + 1) }}>›</button>
+                  </div>
+                </nav>
+              )}
               <div style={{ marginTop: '10px' }}>
                 <strong>Chi tiết chấm công sau đối sánh:</strong>
               </div>
@@ -2244,7 +1931,7 @@ function AttendanceImportModal({
 
             {!previewData ? (
               <button type="button" className="btn btn-primary" onClick={handlePreview} disabled={loading || !file}>
-                {loading ? <><i className="fas fa-spinner fa-spin"></i> Đang đọc file...</> : 'Phân tích & khớp dữ liệu >'}
+                {loading ? <><i className="fas fa-spinner fa-spin"></i> {previewStage}</> : 'Phân tích & khớp dữ liệu >'}
               </button>
             ) : (
               <>

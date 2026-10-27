@@ -78,6 +78,12 @@ Tên được ghép theo thứ tự **Tên riêng + Họ**, mã nhân viên lấ
 dòng chấm công cùng mã và tên chỉ tạo/cập nhật hồ sơ một lần. Khi nhập lại mẫu
 này, chỉ cập nhật tên, mã và bộ phận; giữ các thông tin hồ sơ khác đã lưu.
 
+Ở **Chấm công & Lương → Nhập Excel**, phiếu DEOCA được đọc, đối sánh và tính
+công trong Web Worker để trình duyệt tiếp tục phản hồi với file lớn. Kết quả
+đối sánh được dùng lại theo nhân viên; bảng chọn hồ sơ hiển thị 20 nhân viên
+mỗi trang, nhưng bản xem trước và thao tác nhập vẫn giữ toàn bộ dòng hợp lệ.
+Đóng hộp nhập hoặc chọn file khác sẽ hủy tác vụ đọc đang chạy.
+
 ## Nhập bảng công và kỳ riêng của công ty 32
 
 Các công ty khác dùng luồng cũ: phân tích Excel, ghép hồ sơ, rồi **Xác nhận
