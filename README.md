@@ -70,6 +70,14 @@ cách tính cũ là 13,73 và 18,45 giờ. `scripts/verifyLegacyTenantSettings.m
 kiểm tra kết quả này ở chế độ chỉ đọc; không sửa log gốc, bảng công đã lưu hoặc
 `policySnapshot`.
 
+## Nhập hồ sơ từ phiếu chấm công DEOCA
+
+Trang **Hồ sơ nhân sự → Nhập Excel** nhận cả phiếu chấm công DEOCA có các cột
+**Tên riêng, Họ, ID, Bộ phận, Ngày, Ngày trong tuần, Số lần quẹt thẻ, Ghi**.
+Tên được ghép theo thứ tự **Tên riêng + Họ**, mã nhân viên lấy từ **ID**; các
+dòng chấm công cùng mã và tên chỉ tạo/cập nhật hồ sơ một lần. Khi nhập lại mẫu
+này, chỉ cập nhật tên, mã và bộ phận; giữ các thông tin hồ sơ khác đã lưu.
+
 ## Nhập bảng công và kỳ riêng của công ty 32
 
 Các công ty khác dùng luồng cũ: phân tích Excel, ghép hồ sơ, rồi **Xác nhận

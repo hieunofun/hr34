@@ -1,3 +1,5 @@
+import { findDeocaPunchHeader } from './deocaPunchImport.js'
+
 const NAME_HEADERS = new Set(['ho_va_ten', 'ho_ten', 'ten_nhan_vien', 'ten', 'name'])
 const CODE_HEADERS = new Set(['ma_nhan_vien', 'ma_nv', 'employee_id'])
 const OTHER_HEADERS = new Set([
@@ -41,23 +43,36 @@ export function readEmployeeExcelRows(XLSX, workbook) {
       header: 1, defval: '', blankrows: true, raw: true
     })
     const firstRow = XLSX.utils.decode_range(sheet['!ref']).s.r + 1
+    const punchHeader = findDeocaPunchHeader(display)
 
-    for (let index = 0; index < Math.min(display.length, 20); index++) {
-      const headers = (display[index] || []).map(normalizeEmployeeExcelHeader)
+    for (let index = 0; index < Math.min(display.length, 30); index++) {
+      const isPunchSheet = punchHeader?.rowIndex === index
+      const headers = isPunchSheet
+        ? ['ma_nhan_vien', 'ho_va_ten', 'bo_phan']
+        : (display[index] || []).map(normalizeEmployeeExcelHeader)
       if (!headers.some(header => NAME_HEADERS.has(header))) continue
       const score = 20
         + (headers.some(header => CODE_HEADERS.has(header)) ? 10 : 0)
         + headers.filter(header => OTHER_HEADERS.has(header)).length
       const dataRows = display.slice(index + 1)
-        .map((displayRow, offset) => ({
-          displayRow,
-          rawRow: raw[index + 1 + offset] || [],
-          rowNumber: firstRow + index + 1 + offset
-        }))
+        .map((displayRow, offset) => {
+          let rawRow = raw[index + 1 + offset] || []
+          if (isPunchSheet) {
+            const columns = punchHeader.columns
+            // Match the attendance importer: this export stores the surname
+            // in "Tên riêng" and the remaining name in "Họ".
+            const fullName = [displayRow[columns.first_name], displayRow[columns.last_name]]
+              .map(value => String(value ?? '').trim()).join(' ').replace(/\s+/g, ' ').trim()
+            displayRow = [displayRow[columns.employee_code], fullName, displayRow[columns.department_location]]
+              .map(value => String(value ?? '').trim())
+            rawRow = [...displayRow]
+          }
+          return { displayRow, rawRow, rowNumber: firstRow + index + 1 + offset }
+        })
         .filter(item => hasValue(item.displayRow))
       if (!selected || score > selected.score ||
         (score === selected.score && dataRows.length > selected.dataRows.length)) {
-        selected = { headers, dataRows, score }
+        selected = { headers, dataRows, score, sourceFormat: isPunchSheet ? 'deoca-punch' : 'employees' }
       }
     }
   }
@@ -66,5 +81,5 @@ export function readEmployeeExcelRows(XLSX, workbook) {
     throw new Error('Không tìm thấy cột Họ và tên trong file Excel. Hãy kiểm tra dòng tiêu đề hoặc dùng file mẫu.')
   }
   if (!selected.dataRows.length) throw new Error('File chỉ có tiêu đề, chưa có dòng nhân viên.')
-  return { headers: selected.headers, dataRows: selected.dataRows }
+  return { headers: selected.headers, dataRows: selected.dataRows, sourceFormat: selected.sourceFormat }
 }

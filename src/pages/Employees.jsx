@@ -380,7 +380,7 @@ function Employees() {
             setLoading(true)
             const XLSX = await loadXlsx()
             const workbook = await readWorkbook(XLSX)
-            const { headers, dataRows } = readEmployeeExcelRows(XLSX, workbook)
+            const { headers, dataRows, sourceFormat } = readEmployeeExcelRows(XLSX, workbook)
 
             console.log('📋 Headers detected:', headers)
             console.log('📊 Total data rows:', dataRows.length)
@@ -450,6 +450,7 @@ function Employees() {
             let imported = 0
             let updated = 0
             let skipped = 0
+            let duplicates = 0
             const errors = []
             const seenImportKeys = new Map()
 
@@ -508,14 +509,17 @@ function Employees() {
                             name: payload.ho_va_ten,
                             reason: `Mã NV ${payload.employeeId || '(trống)'} xuất hiện với tên khác (${previousName}); giữ hồ sơ đầu tiên`
                         })
+                        skipped++
+                    } else {
+                        duplicates++
                     }
-                    skipped++
                     continue
                 }
                 seenImportKeys.set(importKey, payload.ho_va_ten)
 
                 const rowErrors = []
 
+                if (sourceFormat === 'deoca-punch' && !payload.employeeId) rowErrors.push('Thiếu ID nhân viên trong phiếu chấm công')
                 if (!isValidDate(payload.ngay_sinh)) rowErrors.push(`Ngày sinh không hợp lệ: "${payload.ngay_sinh}" (cần dd/mm/yyyy)`)
                 if (!isValidDate(payload.ngay_vao_lam)) rowErrors.push(`Ngày vào làm không hợp lệ: "${payload.ngay_vao_lam}" (cần dd/mm/yyyy)`)
                 if (!isValidDate(payload.ngay_lam_chinh_thuc)) rowErrors.push(`Ngày chính thức không hợp lệ: "${payload.ngay_lam_chinh_thuc}" (cần dd/mm/yyyy)`)
@@ -531,8 +535,12 @@ function Employees() {
                     continue
                 }
 
-                const dbPayload = { ...mapAppToUser(payload), company_id: companyId }
                 const existing = codeKey ? existingByCode.get(codeKey) : null
+                // A punch report contains only identity fields. Reimporting it
+                // must preserve the rest of an existing HR profile.
+                const dbPayload = sourceFormat === 'deoca-punch' && existing?.id
+                    ? { company_id: companyId, employee_id: payload.employeeId, name: payload.ho_va_ten, department: payload.bo_phan }
+                    : { ...mapAppToUser(payload), company_id: companyId }
                 if (existing?.auth_user_id) {
                     // Giữ định danh Auth đã cấp khi import lại hồ sơ.
                     dbPayload.username = existing.username || dbPayload.username
@@ -567,14 +575,16 @@ function Employees() {
                             company_id: companyId,
                             ma_nhan_vien: nhanSuCode,
                             ho_ten: payload.ho_va_ten,
-                            chuc_vu: payload.vi_tri || '',
                             bo_phan: payload.bo_phan || '',
-                            ca_lam: payload.ca_lam_viec || 'Ca ngày',
-                            trang_thai: payload.trang_thai || '',
-                            so_dien_thoai: payload.sđt || '',
-                            email: payload.email || '',
-                            ngay_vao_lam: parseFlexibleDate(payload.ngay_vao_lam),
-                            avatar_url: payload.avatarUrl || '',
+                            ...(sourceFormat === 'deoca-punch' ? {} : {
+                                chuc_vu: payload.vi_tri || '',
+                                ca_lam: payload.ca_lam_viec || 'Ca ngày',
+                                trang_thai: payload.trang_thai || '',
+                                so_dien_thoai: payload.sđt || '',
+                                email: payload.email || '',
+                                ngay_vao_lam: parseFlexibleDate(payload.ngay_vao_lam),
+                                avatar_url: payload.avatarUrl || '',
+                            }),
                             updated_at: new Date().toISOString()
                         }], { onConflict: 'company_id,ma_nhan_vien' })
                     nhanSuError = syncError
@@ -604,6 +614,7 @@ function Employees() {
             let message = `Đã thêm mới ${imported} nhân viên`
             if (updated) message += `, cập nhật ${updated} nhân viên đã có mã NV`
             message += '.'
+            if (duplicates) message += `\nĐã gộp ${duplicates} dòng lặp cùng nhân viên.`
             if (skipped > 0) {
                 message += `\nCó ${skipped} dòng bị lỗi/bỏ qua:\n\n`
                 const showErrors = errors.slice(0, 10)
